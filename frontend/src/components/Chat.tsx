@@ -89,10 +89,15 @@ export function Chat() {
     sendMessage(currentConversationId, content, { agentChat: useChatStore.getState().agentChat });
   };
 
-  const handleRename = (id: string, title: string) => {
-    const t = window.prompt('Rename conversation', title);
-    if (t && t.trim()) renameConversation(id, t.trim());
+  const [renamingId, setRenamingId] = useState<string | null>(null);
+  const [renameDraft, setRenameDraft] = useState('');
+
+  const commitRename = () => {
+    const t = renameDraft.trim();
+    if (renamingId && t) renameConversation(renamingId, t);
+    setRenamingId(null);
   };
+
 
   const handleNewConversation = () => createConversation();
 
@@ -296,9 +301,22 @@ export function Chat() {
                       : 'hover:bg-gray-50 dark:hover:bg-gray-700/50'
                   )}
                   onClick={() => setCurrentConversation(conv.id)}
-                  onDoubleClick={() => handleRename(conv.id, conv.title)}
+                  onDoubleClick={() => { setRenamingId(conv.id); setRenameDraft(conv.title); }}
                 >
-                  <div className="p-3 pr-8">
+                  {renamingId === conv.id ? (
+                    <input
+                      autoFocus
+                      value={renameDraft}
+                      onChange={(e) => setRenameDraft(e.target.value)}
+                      onBlur={commitRename}
+                      onKeyDown={(e) => {
+                        if (e.key === 'Enter') commitRename();
+                        if (e.key === 'Escape') setRenamingId(null);
+                      }}
+                      onClick={(e) => e.stopPropagation()}
+                      className="w-full px-1.5 py-0.5 text-sm font-medium bg-white dark:bg-gray-700 border border-blue-400 rounded text-gray-900 dark:text-gray-100 focus:outline-none"
+                    />
+                  ) : (
                     <p
                       className={cn(
                         'font-medium text-sm truncate',
@@ -309,10 +327,7 @@ export function Chat() {
                     >
                       {conv.title}
                     </p>
-                    <p className="text-xs text-gray-400 truncate mt-0.5">
-                      {new Date(conv.updatedAt).toLocaleDateString()}
-                    </p>
-                  </div>
+                  )}
                   <button
                     onClick={(e) => {
                       e.stopPropagation();

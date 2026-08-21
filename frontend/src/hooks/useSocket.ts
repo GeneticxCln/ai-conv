@@ -25,6 +25,7 @@ export function useSocket() {
     currentConversationId,
   } = useChatStore();
 
+  // Socket lifecycle: connect once per mount; never re-runs on conversation switch.
   useEffect(() => {
     const socket = io(WS_URL, {
       transports: ['websocket', 'polling'],
@@ -42,8 +43,8 @@ export function useSocket() {
       // Request initial data
       socket.emit('personas:list');
       socket.emit('conversation:list');
-      if (currentConversationId) {
-        socket.emit('join', currentConversationId);
+      if (useChatStore.getState().currentConversationId) {
+        socket.emit('join', useChatStore.getState().currentConversationId);
       } else {
         socket.emit('conversation:create');
       }
@@ -153,30 +154,27 @@ export function useSocket() {
           content: `[Error: ${error}]`,
           isStreaming: false,
         });
+        stopStreaming(streamingMsg.id);
       }
-      stopStreaming(streamingMsg?.id || '');
-    });
-
-    // Personas (user-created)
-    socket.on('personas:list', (personas: Persona[]) => {
-      setAgents(personas);
     });
 
     return () => {
       socket.disconnect();
     };
-  }, [
-    setConnected,
-    addMessage,
-    updateMessage,
-    setMessages,
-    setAgents,
-    setConversations,
-    addConversation,
-    startStreaming,
-    stopStreaming,
-    currentConversationId,
-  ]);
+  }, []);
+
+  // Room membership: re-join the current conversation after reconnect.
+  useEffect(() => {
+    const socket = socketRef.current;
+    if (!socket) return;
+    const onConnect = () => {
+      if (currentConversationId) socket.emit('join', currentConversationId);
+    };
+    socket.on('connect', onConnect);
+    return () => {
+      socket.off('connect', onConnect);
+    };
+  }, [currentConversationId]);
 
   // ============ Actions ============
   const sendMessage = useCallback((conversationId: string, content: string, opts?: { agentChat?: boolean }) => {
