@@ -67,6 +67,7 @@ export function PersonaSidebar({ agents, onToggle, onCreate, onUpdate, onDelete,
       </div>
 
       <PersonaModal
+        key={modalOpen ? `open-${editing?.id || 'new'}` : 'closed'}
         open={modalOpen}
         editing={editing}
         getModels={getModels}

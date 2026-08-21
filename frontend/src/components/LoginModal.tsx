@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState } from 'react';
 import { User as UserIcon, Plus, Trash2 } from 'lucide-react';
 import { User } from '../types';
 
@@ -8,24 +8,17 @@ interface LoginModalProps {
   onPick: (u: User) => void;
   onCreate: (name: string, avatar?: string) => Promise<User | null>;
   onDeleteUser: (id: string) => void;
-  onClose: () => void;
+  onClose?: () => void;
 }
 
 const AVATARS = ['🙂', '😎', '🦊', '🐼', '🚀', '🌟', '🎧', '🐙'];
 
 export function LoginModal({ open, users, onPick, onCreate, onDeleteUser, onClose }: LoginModalProps) {
-  const [mode, setMode] = useState<'pick' | 'create'>('pick');
+  // Form state initializes per mount; Chat remounts this modal via `key`.
+  const [mode, setMode] = useState<'pick' | 'create'>(users.length === 0 ? 'create' : 'pick');
   const [name, setName] = useState('');
   const [avatar, setAvatar] = useState('🙂');
   const [busy, setBusy] = useState(false);
-
-  useEffect(() => {
-    if (open) {
-      setMode(users.length === 0 ? 'create' : 'pick');
-      setName('');
-      setAvatar('🙂');
-    }
-  }, [open, users.length]);
 
   if (!open) return null;
 
@@ -44,7 +37,7 @@ export function LoginModal({ open, users, onPick, onCreate, onDeleteUser, onClos
             {users.map((u) => (
               <div key={u.id} className="flex items-center gap-2">
                 <button
-                  onClick={() => { onPick(u); onClose(); }}
+                  onClick={() => { onPick(u); onClose?.(); }}
                   className="flex-1 flex items-center gap-3 px-3 py-2.5 rounded-lg bg-gray-50 dark:bg-gray-700/50 hover:bg-blue-50 dark:hover:bg-blue-900/30 text-left"
                 >
                   <span className="text-xl">{u.avatar || '🙂'}</span>
@@ -100,7 +93,7 @@ export function LoginModal({ open, users, onPick, onCreate, onDeleteUser, onClos
                   setBusy(true);
                   const u = await onCreate(name.trim(), avatar);
                   setBusy(false);
-                  if (u) { onPick(u); onClose(); }
+                  if (u) { onPick(u); onClose?.(); }
                 }}
                 className="px-4 py-2 text-sm font-medium rounded-lg bg-blue-600 text-white hover:bg-blue-700 disabled:opacity-40"
               >

@@ -21,8 +21,37 @@ function createWindow() {
     backgroundColor: '#f9fafb',
     webPreferences: {
       contextIsolation: true,
+      nodeIntegration: false,
+      sandbox: true,
     },
   });
+
+  // Open external links in the OS browser; never spawn Electron windows.
+  win.webContents.setWindowOpenHandler(({ url }) => {
+    if (url.startsWith('http:') || url.startsWith('https:')) {
+      require('electron').shell.openExternal(url);
+    }
+    return { action: 'deny' };
+  });
+
+  // Keep the app window on the app origin.
+  const ALLOWED = /^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?/;
+  win.webContents.on('will-navigate', (event, url) => {
+    if (!ALLOWED.test(url)) {
+      event.preventDefault();
+      if (/^https?:/.test(url)) require('electron').shell.openExternal(url);
+    }
+  });
+
+  // Content-Security-Policy for the packaged app (dev server sets its own headers).
+  win.webContents.on('headers-received', (event, details) => {
+    if (!app.isPackaged || !details.responseHeaders) return;
+    details.responseHeaders['Content-Security-Policy'] = [
+      "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; connect-src 'self' http://localhost:3001 http://localhost:3002 ws://localhost:3001 ws://localhost:3002",
+    ];
+    event.headers = details.responseHeaders;
+  });
+
   win.loadURL(getStartUrl());
 }
 

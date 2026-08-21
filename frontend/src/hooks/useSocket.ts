@@ -2,6 +2,7 @@ import { useEffect, useRef, useCallback } from 'react';
 import { io, Socket } from 'socket.io-client';
 import { useChatStore } from '../stores/useChatStore';
 import { Message, AgentTokenPayload, AgentDonePayload, AgentErrorPayload, Persona, User, Conversation } from '../types';
+import { applyAgentToken } from '../lib/streaming';
 
 const WS_URL = import.meta.env.VITE_WS_URL || 'ws://localhost:3001';
 
@@ -10,7 +11,6 @@ export function useSocket() {
   const socketRef = useRef<Socket | null>(null);
   const {
     setConnected,
-    addMessage,
     updateMessage,
     setMessages,
     setAgents,
@@ -96,40 +96,22 @@ export function useSocket() {
       removeMessage(conversationId, id);
     });
 
-    // Messages - Agent token streaming
+    // Messages - Agent token streaming (pure reducer in lib/streaming.ts)
     socket.on('agent:token', (payload: AgentTokenPayload) => {
-      const { conversationId, messageId, agentId, agentName, token, isDone } = payload;
+      const { conversationId, messageId, agentId, isDone } = payload;
 
       if (isDone) {
-        // Message complete - updateMessage will be handled by agent:done
+        // Message complete - content update handled by agent:done
         stopStreaming(messageId);
         return;
       }
 
-      // Check if message exists
-      const existingMessages = useChatStore.getState().messages[conversationId] || [];
-      const existing = existingMessages.find((m) => m.id === messageId);
+      const existing = useChatStore.getState().messages[conversationId] || [];
+      const next = applyAgentToken(existing, payload);
+      setMessages(conversationId, next);
 
-      if (!existing) {
-        // Create new streaming message
-        const newMessage: Message = {
-          id: messageId,
-          conversationId,
-          role: 'agent',
-          content: token,
-          agentId,
-          agentName,
-          createdAt: new Date().toISOString(),
-          isStreaming: true,
-        };
-        addMessage(conversationId, newMessage);
+      if (next.length > existing.length) {
         startStreaming(messageId, agentId);
-      } else {
-        // Append token
-        updateMessage(conversationId, messageId, {
-          content: existing.content + token,
-          isStreaming: true,
-        });
       }
     });
 
@@ -161,6 +143,9 @@ export function useSocket() {
     return () => {
       socket.disconnect();
     };
+    // Handlers close over store actions (stable) and read live state via
+    // getState(); the socket must connect once per mount, not per render.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   // Room membership: re-join the current conversation after reconnect.
@@ -177,9 +162,10 @@ export function useSocket() {
   }, [currentConversationId]);
 
   // ============ Actions ============
-  const sendMessage = useCallback((conversationId: string, content: string, opts?: { agentChat?: boolean }) => {
-    if (!socketRef.current?.connected) return;
+  const sendMessage = useCallback((conversationId: string, content: string, opts?: { agentChat?: boolean }): boolean => {
+    if (!socketRef.current?.connected) return false;
     socketRef.current.emit('user:message', { conversationId, content, agentChat: opts?.agentChat });
+    return true;
   }, []);
 
   const joinConversation = useCallback((conversationId: string) => {
@@ -288,7 +274,6 @@ export function useSocket() {
   }, []);
 
   return {
-    socket: socketRef.current,
     sendMessage,
     joinConversation,
     leaveConversation,

@@ -3,7 +3,8 @@ import { Send } from 'lucide-react';
 import { cn } from '../lib/utils';
 
 interface InputBarProps {
-  onSend: (content: string) => void;
+  /** Returns false when the message could not be handed to the transport. */
+  onSend: (content: string) => boolean;
   disabled?: boolean;
 }
 
@@ -14,8 +15,9 @@ export function InputBar({ onSend, disabled }: InputBarProps) {
     e.preventDefault();
     const trimmed = content.trim();
     if (!trimmed || disabled) return;
-    onSend(trimmed);
-    setContent('');
+    if (onSend(trimmed)) {
+      setContent('');
+    }
   };
 
   const handleKeyDown = (e: KeyboardEvent<HTMLTextAreaElement>) => {

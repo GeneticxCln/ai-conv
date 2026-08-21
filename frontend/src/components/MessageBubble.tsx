@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { memo, useState } from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { Copy, Check, Trash2, RefreshCw } from 'lucide-react';
@@ -12,7 +12,7 @@ interface MessageBubbleProps {
   onRegenerate?: (id: string) => void;
 }
 
-export function MessageBubble({ message, canRegenerate, onDelete, onRegenerate }: MessageBubbleProps) {
+export const MessageBubble = memo(function MessageBubble({ message, canRegenerate, onDelete, onRegenerate }: MessageBubbleProps) {
   const [copied, setCopied] = useState(false);
   const isUser = message.role === 'user';
 
@@ -111,4 +111,4 @@ export function MessageBubble({ message, canRegenerate, onDelete, onRegenerate }
       </div>
     </div>
   );
-}
+});

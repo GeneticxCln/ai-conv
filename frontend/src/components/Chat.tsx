@@ -1,4 +1,4 @@
-import { useEffect, useRef, useCallback, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { useChatStore } from '../stores/useChatStore';
 import { MessageBubble } from './MessageBubble';
 import { InputBar } from './InputBar';
@@ -10,17 +10,17 @@ import { cn } from '../lib/utils';
 import { useSocket } from '../hooks/useSocket';
 
 export function Chat() {
-  const {
-    connected,
-    conversations,
-    currentConversationId,
-    messages,
-    agents,
-    currentUser,
-    setCurrentUser,
-    setCurrentConversation,
-    toggleAgent,
-  } = useChatStore();
+  const connected = useChatStore((s) => s.connected);
+  const conversations = useChatStore((s) => s.conversations);
+  const currentConversationId = useChatStore((s) => s.currentConversationId);
+  const currentMessages = useChatStore((s) =>
+    s.currentConversationId ? s.messages[s.currentConversationId] || [] : []
+  );
+  const agents = useChatStore((s) => s.agents);
+  const currentUser = useChatStore((s) => s.currentUser);
+  const setCurrentUser = useChatStore((s) => s.setCurrentUser);
+  const setCurrentConversation = useChatStore((s) => s.setCurrentConversation);
+  const toggleAgent = useChatStore((s) => s.toggleAgent);
 
   const {
     sendMessage,
@@ -47,31 +47,25 @@ export function Chat() {
 
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const [settingsOpen, setSettingsOpen] = useState(false);
-  const [loginOpen, setLoginOpen] = useState(false);
   const [users, setUsers] = useState<{ id: string; name: string; avatar?: string }[]>([]);
   const [participantsOpen, setParticipantsOpen] = useState(false);
   const [leftDrawer, setLeftDrawer] = useState(false);
   const [rightDrawer, setRightDrawer] = useState(false);
   const streamingCount = useChatStore((s) => Object.keys(s.streamingMessages).length);
-
   const currentConv = conversations.find((c) => c.id === currentConversationId);
-  const currentMessages = currentConversationId ? messages[currentConversationId] || [] : [];
 
-  // Open login when no user chosen
+  const scrollContainerRef = useRef<HTMLDivElement>(null);
+
+  // Autoscroll only while the user is already near the bottom; never yank the
+  // viewport while they are reading history mid-stream.
   useEffect(() => {
-    if (!currentUser) {
-      listUsers().then(setUsers);
-      setLoginOpen(true);
+    const el = scrollContainerRef.current;
+    if (!el) return;
+    const distance = el.scrollHeight - el.scrollTop - el.clientHeight;
+    if (distance < 160) {
+      messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
     }
-  }, [currentUser, listUsers]);
-
-  const scrollToBottom = useCallback(() => {
-    messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
-  }, []);
-
-  useEffect(() => {
-    scrollToBottom();
-  }, [currentMessages, scrollToBottom]);
+  }, [currentMessages]);
 
   useEffect(() => {
     if (currentConversationId) {
@@ -84,9 +78,13 @@ export function Chat() {
     };
   }, [currentConversationId, joinConversation, leaveConversation]);
 
-  const handleSend = (content: string) => {
-    if (!currentConversationId) return;
-    sendMessage(currentConversationId, content, { agentChat: useChatStore.getState().agentChat });
+  const [sendError, setSendError] = useState(false);
+
+  const handleSend = (content: string): boolean => {
+    if (!currentConversationId) return false;
+    const ok = sendMessage(currentConversationId, content, { agentChat: useChatStore.getState().agentChat });
+    setSendError(!ok);
+    return ok;
   };
 
   const [renamingId, setRenamingId] = useState<string | null>(null);
@@ -153,7 +151,7 @@ export function Chat() {
         <div className="flex items-center gap-2">
           {/* User chip */}
           <button
-            onClick={() => { listUsers().then(setUsers); setLoginOpen(true); }}
+            onClick={() => { listUsers().then(setUsers); setCurrentUser(null); }}
             className="flex items-center gap-1.5 px-2 py-1.5 rounded-lg hover:bg-gray-100 dark:hover:bg-gray-700"
             title="Switch profile"
           >
@@ -356,7 +354,7 @@ export function Chat() {
 
         {/* Chat area */}
         <main className="flex-1 flex flex-col min-w-0">
-          <div className="flex-1 overflow-y-auto p-4 space-y-4 scrollbar-thin">
+          <div ref={scrollContainerRef} className="flex-1 overflow-y-auto p-4 space-y-4 scrollbar-thin">
             {currentMessages.length === 0 ? (
               <div className="flex flex-col items-center justify-center h-full text-gray-400 dark:text-gray-500">
                 <MessageSquare className="w-12 h-12 mb-4 opacity-50" />
@@ -389,6 +387,13 @@ export function Chat() {
               </button>
             </div>
           )}
+          {sendError && (
+            <div className="px-4 pb-1 flex justify-center">
+              <span className="text-xs text-red-500 dark:text-red-400">
+                Message not sent — connection lost. Your draft is preserved.
+              </span>
+            </div>
+          )}
 
           <InputBar onSend={handleSend} disabled={!currentConversationId || !connected} />
         </main>
@@ -415,7 +420,8 @@ export function Chat() {
       />
 
       <LoginModal
-        open={loginOpen}
+        key={currentUser ? 'picked' : 'open'}
+        open={!currentUser}
         users={users}
         onPick={setCurrentUser}
         onCreate={createUser}
@@ -424,7 +430,6 @@ export function Chat() {
           if (currentUser?.id === id) setCurrentUser(null);
           listUsers().then(setUsers);
         }}
-        onClose={() => setLoginOpen(false)}
       />
 
       {/* Mobile left drawer */}

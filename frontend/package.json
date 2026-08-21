@@ -11,7 +11,7 @@
     "preview": "vite preview",
     "lint": "eslint src --ext .ts,.tsx",
     "test": "vitest run",
-    "package": "vite build && electron-builder"
+    "package": "tsc && vite build && electron-builder"
   },
   "dependencies": {
     "clsx": "^2.1.0",
@@ -34,6 +34,7 @@
     "electron": "^43.4.1",
     "electron-builder": "^26.15.3",
     "eslint": "^8.57.1",
+    "eslint-plugin-react-hooks": "^7.1.1",
     "postcss": "^8.4.38",
     "tailwindcss": "^3.4.3",
     "typescript": "^5.4.5",

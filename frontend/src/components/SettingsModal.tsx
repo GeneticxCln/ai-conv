@@ -22,6 +22,19 @@ export function SettingsModal({ open, onClose, onClearConversations, getModels, 
   const [models, setModels] = useState<string[]>([]);
   const [newModel, setNewModel] = useState('');
 
+  const checkHealth = () => {
+    // Start async; the 'checking' state lands in a promise callback, not
+    // synchronously inside the effect body.
+    const apiBase = import.meta.env.VITE_API_URL || 'http://localhost:3001';
+    Promise.resolve()
+      .then(() => setHealth('checking'))
+      .then(() => fetch('/health'))
+      .catch(() => fetch(`${apiBase}/health`))
+      .then((r) => (r && r.ok ? r.json() : Promise.reject(new Error('health check failed'))))
+      .then((d) => setHealth(d?.ollama ? 'ok' : 'down'))
+      .catch(() => setHealth('down'));
+  };
+
   const refreshModels = () => {
     getModels().then(setModels);
   };
@@ -31,15 +44,8 @@ export function SettingsModal({ open, onClose, onClearConversations, getModels, 
       checkHealth();
       refreshModels();
     }
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- run once per open
   }, [open]);
-
-  const checkHealth = () => {
-    setHealth('checking');
-    fetch('http://localhost:3001/health')
-      .then((r) => r.json())
-      .then((d) => setHealth(d?.ollama ? 'ok' : 'down'))
-      .catch(() => setHealth('down'));
-  };
 
   if (!open) return null;
 

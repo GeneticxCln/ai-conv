@@ -14,37 +14,24 @@ interface PersonaModalProps {
 const AVATARS = ['🤖', '😎', '🧠', '🎭', '🌟', '🎯', '🎨', '📚', '🎵', '💪', '🍳', '🌍'];
 
 export function PersonaModal({ open, editing, getModels, onClose, onSave, onDelete }: PersonaModalProps) {
-  const [name, setName] = useState('');
-  const [avatar, setAvatar] = useState('🤖');
-  const [description, setDescription] = useState('');
-  const [systemPrompt, setSystemPrompt] = useState('');
-  const [temperature, setTemperature] = useState(0.7);
+  // State initializes from `editing` per mount; PersonaSidebar remounts via `key`.
+  const [name, setName] = useState(editing?.name || '');
+  const [avatar, setAvatar] = useState(editing?.avatar || '🤖');
+  const [description, setDescription] = useState(editing?.description || '');
+  const [systemPrompt, setSystemPrompt] = useState(editing?.systemPrompt || '');
+  const [temperature, setTemperature] = useState(editing?.temperature ?? 0.7);
   const [models, setModels] = useState<string[]>([]);
-  const [model, setModel] = useState('');
+  const [model, setModel] = useState(editing?.model || '');
 
   useEffect(() => {
     if (open) {
-      if (editing) {
-        setName(editing.name);
-        setAvatar(editing.avatar || '🤖');
-        setDescription(editing.description || '');
-        setSystemPrompt(editing.systemPrompt);
-        setTemperature(editing.temperature);
-        setModel(editing.model || '');
-      } else {
-        setName('');
-        setAvatar('🤖');
-        setDescription('');
-        setSystemPrompt('');
-        setTemperature(0.7);
-        setModel('');
-      }
       getModels().then((list) => {
         setModels(list);
         setModel((cur) => (cur && list.includes(cur) ? cur : list[0] || ''));
       });
     }
-  }, [open, editing, getModels]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- fetch models once per open
+  }, [open]);
 
   if (!open) return null;
 
