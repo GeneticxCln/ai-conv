@@ -1,5 +1,11 @@
 node_modules
 dist
+dist/linux-unpacked
 *.log
 .env
+!build/
+build/*
+!build/icons/
+!build/icon.png
+!build/icon.ico
 .env.local
