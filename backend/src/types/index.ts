@@ -76,7 +76,16 @@ export const AgentErrorPayloadSchema = z.object({
   agentName: z.string(),
   error: z.string(),
 });
-export type AgentErrorPayload = z.infer<typeof AgentErrorPayloadSchema>;
+export const ConversationImportSchema = z.object({
+  title: z.string().max(200).optional(),
+  messages: z.array(z.object({
+    role: z.enum(['user', 'agent', 'system']),
+    content: z.string().max(100000),
+    agentName: z.string().max(120).optional(),
+    createdAt: z.string().datetime().optional(),
+  })).max(10000),
+});
+export type ConversationImport = z.infer<typeof ConversationImportSchema>;
 
 // ============ Socket Event Names ============
 export const SocketEvents = {

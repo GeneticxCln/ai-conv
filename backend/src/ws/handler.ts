@@ -1,7 +1,7 @@
 import { Server, Socket } from 'socket.io';
 import { AgentRegistry, DefaultAgent } from '../agents';
 import { createConversation, ensureConversation, getConversation, getMessages, getMessagePage, getConversations, updateConversationTimestamp, createMessage, createPersonaRow, updatePersonaRow, deletePersonaRow, renameConversation as dbRenameConversation, clearConversations as dbClearConversations, deleteConversation as dbDeleteConversation, createUser, getUsers, deleteUserRow, setParticipants, getParticipants, deleteMessageRow, getMessage } from '../storage/db';
-import { UserMessagePayloadSchema } from '../types';
+import { UserMessagePayloadSchema, ConversationImportSchema } from '../types';
 import { randomUUID } from 'crypto';
 import { ollama, abortStreamsForConversation } from '../llm/ollama';
 import { verifyToken, getUserFromToken } from '../auth';
@@ -179,12 +179,17 @@ export function setupSocketHandler(io: Server, registry: AgentRegistry) {
     });
 
     // ===== Import conversation (from exported JSON) =====
-    socket.on('conversation:import', (data: { title?: string; messages?: Array<{ role: string; content: string; agentName?: string; createdAt?: string }> }, ack?: (c: unknown) => void) => {
+    socket.on('conversation:import', (data: unknown, ack?: (c: unknown) => void) => {
+      const parsed = ConversationImportSchema.safeParse(data);
+      if (!parsed.success) {
+        if (typeof ack === 'function') ack(null);
+        return;
+      }
       try {
-        const conv = createConversation(String(data.title || 'Imported').slice(0, 120));
-        for (const m of data.messages || []) {
+        const conv = createConversation(String(parsed.data.title || 'Imported').slice(0, 120));
+        for (const m of parsed.data.messages) {
           const role = m.role === 'user' ? 'user' : m.role === 'agent' ? 'agent' : 'system';
-          createMessage(conv.id, role as 'user' | 'agent' | 'system', String(m.content || ''), undefined, m.agentName);
+          createMessage(conv.id, role as 'user' | 'agent' | 'system', m.content, undefined, m.agentName);
         }
         io.emit('conversation:list', getConversations());
         if (typeof ack === 'function') ack(conv);
