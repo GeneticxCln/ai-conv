@@ -1,5 +1,4 @@
 import { BaseAgent } from './base';
-import { Server } from 'socket.io';
 import { Message } from '../types';
 import { createMessage, updateMessageContent } from '../storage/db';
 import { registerStream, releaseStream } from '../llm/ollama';

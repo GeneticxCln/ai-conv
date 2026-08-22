@@ -185,11 +185,28 @@ export function useSocket() {
     if (!socketRef.current?.connected) return;
     socketRef.current.emit('leave', conversationId);
   }, []);
-
   const toggleAgent = useCallback((agentId: string) => {
     if (!socketRef.current?.connected) return;
     const p = useChatStore.getState().agents.find(a => a.id === agentId);
     if (p) socketRef.current.emit('persona:update', { id: agentId, patch: { enabled: !p.enabled } });
+  }, []);
+
+  /** Fetch one older page (ack) and prepend it; returns false when exhausted/offline. */
+  const loadOlderMessages = useCallback(async (conversationId: string): Promise<boolean> => {
+    if (!socketRef.current?.connected) return false;
+    const current = useChatStore.getState().messages[conversationId] || [];
+    if (current.length === 0) return false;
+    try {
+      const page = await socketRef.current.emitWithAck('messages:older', {
+        conversationId,
+        before: current[0]?.createdAt,
+      });
+      if (!Array.isArray(page) || page.length === 0) return false;
+      useChatStore.getState().prependMessages(conversationId, page);
+      return true;
+    } catch {
+      return false;
+    }
   }, []);
 
   const createPersona = useCallback((data: Partial<Persona>) => {
@@ -286,6 +303,7 @@ export function useSocket() {
   return {
     sendMessage,
     joinConversation,
+    loadOlderMessages,
     leaveConversation,
     toggleAgent,
     createPersona,

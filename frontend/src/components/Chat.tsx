@@ -8,6 +8,7 @@ import { LoginModal } from './LoginModal';
 import { MessageSquare, Plus, Settings, X, Download, Upload, Users, Menu, User as UserIcon } from 'lucide-react';
 import { cn } from '../lib/utils';
 import { useSocket } from '../hooks/useSocket';
+import { ImportPayloadSchema } from '../lib/importSchema';
 
 export function Chat() {
   const connected = useChatStore((s) => s.connected);
@@ -26,6 +27,7 @@ export function Chat() {
     sendMessage,
     stopGeneration,
     joinConversation,
+    loadOlderMessages,
     leaveConversation,
     createPersona,
     updatePersona,
@@ -66,6 +68,31 @@ export function Chat() {
       messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
     }
   }, [currentMessages]);
+
+  // Load the next older page when the user scrolls to the top.
+  const loadingOlderRef = useRef(false);
+  const hasAllHistoryRef = useRef(false);
+  const handleScroll = () => {
+    const el = scrollContainerRef.current;
+    if (!el || !currentConversationId) return;
+    if (el.scrollTop > 40 || loadingOlderRef.current || hasAllHistoryRef.current) return;
+    loadingOlderRef.current = true;
+    const prevHeight = el.scrollHeight;
+    const prevTop = el.scrollTop;
+    loadOlderMessages(currentConversationId).then((gotMore) => {
+      hasAllHistoryRef.current = !gotMore;
+      // Keep the viewport anchored on the same content after prepend.
+      requestAnimationFrame(() => {
+        el.scrollTop = el.scrollHeight - prevHeight + prevTop;
+      });
+      loadingOlderRef.current = false;
+    });
+  };
+
+  useEffect(() => {
+    hasAllHistoryRef.current = false;
+    loadingOlderRef.current = false;
+  }, [currentConversationId]);
 
   useEffect(() => {
     if (currentConversationId) {
@@ -118,13 +145,19 @@ export function Chat() {
   };
 
   const handleImport = async (file: File) => {
+    const MAX_BYTES = 5 * 1024 * 1024; // 5 MB
+    if (file.size > MAX_BYTES) {
+      alert('File too large (max 5 MB)');
+      return;
+    }
     try {
-      const text = await file.text();
-      const data = JSON.parse(text);
-      const conv = await importConversation({
-        title: String(data.title || 'Imported'),
-        messages: Array.isArray(data.messages) ? data.messages : [],
-      });
+      const data: unknown = JSON.parse(await file.text());
+      const parsed = ImportPayloadSchema.safeParse(data);
+      if (!parsed.success) {
+        alert('Invalid conversation file');
+        return;
+      }
+      const conv = await importConversation(parsed.data);
       if (conv) setCurrentConversation(conv.id);
     } catch {
       alert('Invalid conversation file');
@@ -337,7 +370,6 @@ export function Chat() {
                           setConfirmDeleteId(null);
                         }}
                         className="text-[10px] font-medium text-red-500 hover:text-red-600 px-1"
-                        aria-label="Confirm delete"
                       >
                         Yes
                       </button>
@@ -382,7 +414,7 @@ export function Chat() {
 
         {/* Chat area */}
         <main className="flex-1 flex flex-col min-w-0">
-          <div ref={scrollContainerRef} className="flex-1 overflow-y-auto p-4 space-y-4 scrollbar-thin">
+          <div ref={scrollContainerRef} onScroll={handleScroll} className="flex-1 overflow-y-auto p-4 space-y-4 scrollbar-thin">
             {currentMessages.length === 0 ? (
               <div className="flex flex-col items-center justify-center h-full text-gray-400 dark:text-gray-500">
                 <MessageSquare className="w-12 h-12 mb-4 opacity-50" />

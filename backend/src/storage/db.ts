@@ -275,19 +275,45 @@ export function updateMessageContent(id: string, content: string, isStreaming = 
     .run(content, isStreaming ? 1 : 0, id);
 }
 
-export function getMessages(conversationId: string): Message[] {
-  const rows = db.prepare('SELECT * FROM messages WHERE conversation_id = ? ORDER BY created_at ASC')
-    .all(conversationId) as any[];
-  return rows.map(r => ({
+interface MessageRow {
+  id: string;
+  conversation_id: string;
+  role: string;
+  content: string;
+  agent_id: string | null;
+  agent_name: string | null;
+  created_at: string;
+  is_streaming: number;
+}
+
+function mapMessageRow(r: MessageRow): Message {
+  return {
     id: r.id,
     conversationId: r.conversation_id,
-    role: r.role,
+    role: r.role as Message['role'],
     content: r.content,
     agentId: r.agent_id || undefined,
     agentName: r.agent_name || undefined,
     createdAt: r.created_at,
     isStreaming: Boolean(r.is_streaming),
-  }));
+  };
+}
+
+export function getMessages(conversationId: string): Message[] {
+  const rows = db.prepare('SELECT * FROM messages WHERE conversation_id = ? ORDER BY created_at ASC')
+    .all(conversationId) as MessageRow[];
+  return rows.map(mapMessageRow);
+}
+
+/** Newest-first page of a conversation, bounded to `limit` rows; returned oldest-first. */
+export function getMessagePage(conversationId: string, limit = 100, beforeCreatedAt?: string): Message[] {
+  const capped = Math.min(Math.max(limit, 1), 500);
+  const rows: MessageRow[] = beforeCreatedAt
+    ? db.prepare('SELECT * FROM messages WHERE conversation_id = ? AND created_at < ? ORDER BY created_at DESC LIMIT ?')
+        .all(conversationId, beforeCreatedAt, capped) as MessageRow[]
+    : db.prepare('SELECT * FROM messages WHERE conversation_id = ? ORDER BY created_at DESC LIMIT ?')
+        .all(conversationId, capped) as MessageRow[];
+  return rows.map(mapMessageRow).reverse();
 }
 
 export function getMessage(id: string): Message | null {

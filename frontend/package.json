@@ -22,6 +22,7 @@
     "remark-gfm": "^4.0.1",
     "socket.io-client": "^4.7.5",
     "tailwind-merge": "^2.2.1",
+    "zod": "^4.4.3",
     "zustand": "^4.5.1"
   },
   "devDependencies": {
@@ -44,6 +45,7 @@
   "build": {
     "appId": "com.aiconv.app",
     "productName": "AI Conv",
+    "executableName": "ai-conv",
     "files": [
       "dist/**/*",
       "electron/**/*"
@@ -53,13 +55,16 @@
         "AppImage",
         "deb"
       ],
-      "category": "Network;Chat"
+      "category": "Network;Chat",
+      "icon": "build/icons/"
     },
     "win": {
-      "target": "nsis"
+      "target": "nsis",
+      "icon": "build/icon.ico"
     },
     "mac": {
-      "target": "dmg"
+      "target": "dmg",
+      "icon": "build/icon.png"
     }
   }
 }

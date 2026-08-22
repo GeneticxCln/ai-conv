@@ -34,6 +34,7 @@ interface ChatState {
   updateMessage: (conversationId: string, messageId: string, updates: Partial<Message>) => void;
   removeMessage: (conversationId: string, messageId: string) => void;
   setMessages: (conversationId: string, messages: Message[]) => void;
+  prependMessages: (conversationId: string, older: Message[]) => void;
 
   // Agents
   agents: Persona[];
@@ -117,7 +118,13 @@ export const useChatStore = create<ChatState>()(
         set((state) => ({
           messages: { ...state.messages, [conversationId]: messages },
         })),
-
+      prependMessages: (conversationId, older) =>
+        set((state) => {
+          const existing = state.messages[conversationId] || [];
+          const known = new Set(existing.map((m) => m.id));
+          const fresh = older.filter((m) => !known.has(m.id));
+          return { messages: { ...state.messages, [conversationId]: [...fresh, ...existing] } };
+        }),
       // Agents
       agents: [],
       setAgents: (agents) => set({ agents }),
@@ -149,6 +156,21 @@ export const useChatStore = create<ChatState>()(
     }),
     {
       name: 'ai-conv-chat',
+      version: 1,
+      migrate: (persisted, version) => {
+        const p = (persisted ?? {}) as Partial<ChatState>;
+        if (version < 1) {
+          // v0 -> v1: drop legacy fields that no longer match current types.
+          delete (p as Record<string, unknown>).streamingMessages;
+          delete (p as Record<string, unknown>).messages;
+        }
+        return {
+          agents: Array.isArray(p.agents) ? p.agents : [],
+          theme: p.theme === 'dark' ? 'dark' : 'light',
+          agentChat: Boolean(p.agentChat),
+          currentUser: p.currentUser && typeof p.currentUser.id === 'string' ? p.currentUser : null,
+        } as ChatState;
+      },
       partialize: (state) => ({
         agents: state.agents,
         theme: state.theme,

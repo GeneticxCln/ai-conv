@@ -34,8 +34,17 @@ function createWindow() {
     return { action: 'deny' };
   });
 
-  // Keep the app window on the app origin.
-  const ALLOWED = /^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?/;
+  // Keep the app window on the app origin. Extra origins come from APP_URL /
+  // AI_CONV_EXTRA_ORIGINS (comma-separated) so non-local deployments work.
+  const appOrigin = (() => {
+    try { return new URL(getStartUrl()).origin; } catch { return null; }
+  })();
+  const extraOrigins = (process.env.AI_CONV_EXTRA_ORIGINS || '')
+    .split(',').map(s => s.trim()).filter(Boolean);
+  const allowedOrigins = ['http://localhost:5173', 'http://127.0.0.1:5173', appOrigin, ...extraOrigins]
+    .filter(Boolean);
+  const ALLOWED = new RegExp('^https?:\\/\\/(' + allowedOrigins.map(o => o.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('|') + ')');
+
   win.webContents.on('will-navigate', (event, url) => {
     if (!ALLOWED.test(url)) {
       event.preventDefault();
@@ -43,11 +52,17 @@ function createWindow() {
     }
   });
 
-  // Content-Security-Policy for the packaged app (dev server sets its own headers).
+  // Content-Security-Policy for the packaged app; connect-src follows the
+  // backend origins the window is allowed to reach.
+  const apiOrigins = [
+    'http://localhost:3001', 'http://localhost:3002',
+    'ws://localhost:3001', 'ws://localhost:3002',
+    ...(process.env.AI_CONV_API_ORIGIN ? [process.env.AI_CONV_API_ORIGIN, process.env.AI_CONV_API_ORIGIN.replace(/^http/, 'ws')] : []),
+  ];
   win.webContents.on('headers-received', (event, details) => {
     if (!app.isPackaged || !details.responseHeaders) return;
     details.responseHeaders['Content-Security-Policy'] = [
-      "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; connect-src 'self' http://localhost:3001 http://localhost:3002 ws://localhost:3001 ws://localhost:3002",
+      `default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; connect-src 'self' ${apiOrigins.join(' ')}`,
     ];
     event.headers = details.responseHeaders;
   });

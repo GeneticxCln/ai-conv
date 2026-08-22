@@ -1,6 +1,6 @@
 import { Server, Socket } from 'socket.io';
 import { AgentRegistry, DefaultAgent } from '../agents';
-import { createConversation, ensureConversation, getConversation, getMessages, getConversations, updateConversationTimestamp, createMessage, createPersonaRow, updatePersonaRow, deletePersonaRow, renameConversation as dbRenameConversation, clearConversations as dbClearConversations, deleteConversation as dbDeleteConversation, createUser, getUsers, deleteUserRow, setParticipants, getParticipants, deleteMessageRow, getMessage } from '../storage/db';
+import { createConversation, ensureConversation, getConversation, getMessages, getMessagePage, getConversations, updateConversationTimestamp, createMessage, createPersonaRow, updatePersonaRow, deletePersonaRow, renameConversation as dbRenameConversation, clearConversations as dbClearConversations, deleteConversation as dbDeleteConversation, createUser, getUsers, deleteUserRow, setParticipants, getParticipants, deleteMessageRow, getMessage } from '../storage/db';
 import { UserMessagePayloadSchema } from '../types';
 import { randomUUID } from 'crypto';
 import { ollama, abortStreamsForConversation } from '../llm/ollama';
@@ -10,11 +10,17 @@ export function setupSocketHandler(io: Server, registry: AgentRegistry) {
   io.on('connection', (socket: Socket) => {
     console.log(`Client connected: ${socket.id}`);
 
-    // Join conversation room
+    // Join conversation room; history is served in bounded pages.
     socket.on('join', (conversationId: string) => {
       socket.join(conversationId);
       console.log(`Socket ${socket.id} joined conversation ${conversationId}`);
-      socket.emit('messages:history', { conversationId, messages: getMessages(conversationId) });
+      socket.emit('messages:history', { conversationId, messages: getMessagePage(conversationId, 100) });
+    });
+
+    // Older messages, newest-first internally; client prepends the returned page.
+    socket.on('messages:older', ({ conversationId, before }: { conversationId: string; before?: string }, ack?: (page: unknown) => void) => {
+      const page = getMessagePage(String(conversationId), 100, before ? String(before) : undefined);
+      if (typeof ack === 'function') ack(page); else socket.emit('messages:older', page);
     });
 
     socket.on('leave', (conversationId: string) => {
