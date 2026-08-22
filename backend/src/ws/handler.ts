@@ -65,8 +65,10 @@ export function setupSocketHandler(io: Server, registry: AgentRegistry) {
           io.emit('conversation:list', getConversations());
         }
 
-        // Save user message
-        createMessage(conversationId, 'user', content);
+        // Save user message and echo it so every client (including the
+        // sender) renders it immediately without a rejoin.
+        const userMessage = createMessage(conversationId, 'user', content);
+        io.emit('message:user', userMessage);
         updateConversationTimestamp(conversationId);
 
         // Get history for context

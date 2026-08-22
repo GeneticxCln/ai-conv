@@ -11,6 +11,7 @@ export function useSocket() {
   const socketRef = useRef<Socket | null>(null);
   const {
     setConnected,
+    addMessage,
     updateMessage,
     setMessages,
     setAgents,
@@ -65,12 +66,11 @@ export function useSocket() {
       setAgents(personas);
     });
 
-    // Conversations
-    socket.on('conversation:list', (conversations: any[]) => {
+    socket.on('conversation:list', (conversations: Conversation[]) => {
       setConversations(conversations);
     });
 
-    socket.on('conversation:created', (conversation: any) => {
+    socket.on('conversation:created', (conversation: Conversation) => {
       addConversation(conversation);
       setCurrentConversation(conversation.id);
       socket.emit('join', conversation.id);
@@ -94,6 +94,14 @@ export function useSocket() {
 
     socket.on('message:deleted', ({ conversationId, id }: { conversationId: string; id: string }) => {
       removeMessage(conversationId, id);
+    });
+
+    // Own message echoed by the server after persist (see backend handler).
+    socket.on('message:user', (message: Message) => {
+      const existing = useChatStore.getState().messages[message.conversationId] || [];
+      if (!existing.some((m) => m.id === message.id)) {
+        addMessage(message.conversationId, message);
+      }
     });
 
     // Messages - Agent token streaming (pure reducer in lib/streaming.ts)
@@ -208,11 +216,6 @@ export function useSocket() {
     }
   }, []);
 
-  const createConversation = useCallback((title?: string) => {
-    if (!socketRef.current?.connected) return;
-    socketRef.current.emit('conversation:create', title);
-  }, []);
-
   const deleteConversation = useCallback((id: string) => {
     if (!socketRef.current?.connected) return;
     socketRef.current.emit('conversation:delete', id);
@@ -228,6 +231,13 @@ export function useSocket() {
     socketRef.current.emit('conversations:clear');
   }, []);
 
+  const createConversation = useCallback((title?: string) => {
+    if (!socketRef.current?.connected) return;
+    // Backend's NOT NULL guard crashed on an explicit `undefined` title; omit
+    // the argument entirely so the server default applies.
+    if (title && title.trim()) socketRef.current.emit('conversation:create', title.trim());
+    else socketRef.current.emit('conversation:create');
+  }, []);
   const stopGeneration = useCallback((conversationId: string) => {
     if (!socketRef.current?.connected) return;
     socketRef.current.emit('generation:stop', conversationId);

@@ -89,6 +89,7 @@ export function Chat() {
 
   const [renamingId, setRenamingId] = useState<string | null>(null);
   const [renameDraft, setRenameDraft] = useState('');
+  const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null);
 
   const commitRename = () => {
     const t = renameDraft.trim();
@@ -326,16 +327,43 @@ export function Chat() {
                       {conv.title}
                     </p>
                   )}
-                  <button
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      deleteConversation(conv.id);
-                    }}
-                    className="absolute right-2 top-1/2 -translate-y-1/2 p-1 rounded text-gray-300 hover:text-red-500 opacity-0 group-hover:opacity-100"
-                    aria-label="Delete conversation"
-                  >
-                    <X className="w-4 h-4" />
-                  </button>
+                  {confirmDeleteId === conv.id ? (
+                    <div className="absolute right-1 top-1/2 -translate-y-1/2 flex items-center gap-1 bg-white dark:bg-gray-800 rounded-lg shadow px-1.5 py-0.5 border border-gray-200 dark:border-gray-700">
+                      <span className="text-[10px] text-gray-500 dark:text-gray-400">Delete?</span>
+                      <button
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          deleteConversation(conv.id);
+                          setConfirmDeleteId(null);
+                        }}
+                        className="text-[10px] font-medium text-red-500 hover:text-red-600 px-1"
+                        aria-label="Confirm delete"
+                      >
+                        Yes
+                      </button>
+                      <button
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          setConfirmDeleteId(null);
+                        }}
+                        className="text-[10px] text-gray-500 hover:text-gray-700 px-1"
+                        aria-label="Cancel delete"
+                      >
+                        No
+                      </button>
+                    </div>
+                  ) : (
+                    <button
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        setConfirmDeleteId(conv.id);
+                      }}
+                      className="absolute right-2 top-1/2 -translate-y-1/2 p-1 rounded text-gray-300 hover:text-red-500 opacity-0 group-hover:opacity-100"
+                      aria-label="Delete conversation"
+                    >
+                      <X className="w-4 h-4" />
+                    </button>
+                  )}
                 </div>
               ))
             )}

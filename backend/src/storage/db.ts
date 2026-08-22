@@ -157,13 +157,14 @@ export interface ConversationFull extends Conversation {
   participants?: string[];
 }
 
-export function createConversation(title = 'New Conversation', userId?: string, participants?: string[]): ConversationFull {
+export function createConversation(title?: string, userId?: string, participants?: string[]): ConversationFull {
+  const safeTitle = (title ?? '').trim().slice(0, 120) || 'New Conversation';
   const now = new Date().toISOString();
   const id = randomUUID();
   db.prepare(
     'INSERT INTO conversations (id, title, created_at, updated_at, user_id, participants) VALUES (?, ?, ?, ?, ?, ?)'
-  ).run(id, title, now, now, userId || null, participants && participants.length ? JSON.stringify(participants) : null);
-  return { id, title, createdAt: now, updatedAt: now, userId, participants };
+  ).run(id, safeTitle, now, now, userId || null, participants && participants.length ? JSON.stringify(participants) : null);
+  return { id, title: safeTitle, createdAt: now, updatedAt: now, userId, participants };
 }
 
 export function ensureConversation(id: string): Conversation {

@@ -19,6 +19,7 @@ export function LoginModal({ open, users, onPick, onCreate, onDeleteUser, onClos
   const [name, setName] = useState('');
   const [avatar, setAvatar] = useState('🙂');
   const [busy, setBusy] = useState(false);
+  const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null);
 
   if (!open) return null;
 
@@ -43,13 +44,33 @@ export function LoginModal({ open, users, onPick, onCreate, onDeleteUser, onClos
                   <span className="text-xl">{u.avatar || '🙂'}</span>
                   <span className="text-sm font-medium text-gray-800 dark:text-gray-100">{u.name}</span>
                 </button>
-                <button
-                  onClick={() => onDeleteUser(u.id)}
-                  className="p-2 text-gray-300 hover:text-red-500"
-                  title="Delete profile"
-                >
-                  <Trash2 className="w-4 h-4" />
-                </button>
+                {confirmDeleteId === u.id ? (
+                  <div className="flex items-center gap-1">
+                    <button
+                      onClick={() => { onDeleteUser(u.id); setConfirmDeleteId(null); }}
+                      className="text-xs font-medium text-red-500 hover:text-red-600 px-1.5 py-1"
+                      aria-label="Confirm delete profile"
+                    >
+                      Delete?
+                    </button>
+                    <button
+                      onClick={() => setConfirmDeleteId(null)}
+                      className="text-xs text-gray-400 hover:text-gray-600 px-1 py-1"
+                      aria-label="Cancel delete profile"
+                    >
+                      No
+                    </button>
+                  </div>
+                ) : (
+                  <button
+                    onClick={() => setConfirmDeleteId(u.id)}
+                    className="p-2 text-gray-300 hover:text-red-500"
+                    title="Delete profile"
+                    aria-label="Delete profile"
+                  >
+                    <Trash2 className="w-4 h-4" />
+                  </button>
+                )}
               </div>
             ))}
             <button

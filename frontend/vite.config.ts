@@ -2,7 +2,11 @@ import { defineConfig } from 'vite';
 import react from '@vitejs/plugin-react';
 import path from 'path';
 
-export default defineConfig({
+export default defineConfig(({ command }) => ({
+  // Strip console.* from production bundles (`vite build`); keep them in dev.
+  esbuild: {
+    drop: command === 'build' ? ['console'] : [],
+  },
   plugins: [react()],
   resolve: {
     alias: {
@@ -19,4 +23,4 @@ export default defineConfig({
       },
     },
   },
-});
+}));
