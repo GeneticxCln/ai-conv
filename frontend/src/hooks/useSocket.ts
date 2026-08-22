@@ -63,9 +63,8 @@ export function useSocket() {
       socket.emit('conversation:list');
       if (useChatStore.getState().currentConversationId) {
         socket.emit('join', useChatStore.getState().currentConversationId);
-      } else {
-        socket.emit('conversation:create');
       }
+      // Don't auto-create conversation on connect - user can create via UI
     });
 
     socket.on('disconnect', () => {

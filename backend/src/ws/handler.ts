@@ -5,8 +5,22 @@ import { UserMessagePayloadSchema } from '../types';
 import { randomUUID } from 'crypto';
 import { ollama, abortStreamsForConversation } from '../llm/ollama';
 
-// ============ Socket Handler ============
-export function setupSocketHandler(io: Server, registry: AgentRegistry) {
+// Simple in-memory rate limiter for model:pull
+const pullRateLimiter = new Map<string, number[]>();
+const PULL_RATE_LIMIT_WINDOW = 60000; // 1 minute
+const PULL_RATE_LIMIT_MAX = 3; // max 3 pulls per minute per socket
+
+function checkPullRateLimit(socketId: string): boolean {
+  const now = Date.now();
+  const timestamps = pullRateLimiter.get(socketId) || [];
+  const recent = timestamps.filter(ts => now - ts < PULL_RATE_LIMIT_WINDOW);
+  if (recent.length >= PULL_RATE_LIMIT_MAX) return false;
+  recent.push(now);
+  pullRateLimiter.set(socketId, recent);
+  return true;
+}
+
+ // ============ Socket Handler ============
   io.on('connection', (socket: Socket) => {
     console.log(`Client connected: ${socket.id}`);
 
@@ -192,8 +206,12 @@ export function setupSocketHandler(io: Server, registry: AgentRegistry) {
 
     // ===== Pull a model (with progress broadcast) =====
     socket.on('model:pull', async (modelName: string) => {
+      // Rate limit per socket
+      if (!checkPullRateLimit(socket.id)) {
+        socket.emit('error', { message: 'Rate limit exceeded: max 3 model pulls per minute' });
+        return;
+      }
       const name = String(modelName || '').trim();
-      if (!name) return;
       console.log(`Pulling model: ${name}`);
       try {
         const stream = await ollama.pull({ model: name, stream: true });
@@ -309,4 +327,3 @@ export function setupSocketHandler(io: Server, registry: AgentRegistry) {
       console.log(`Client disconnected: ${socket.id}`);
     });
   });
-}
