@@ -4,7 +4,7 @@ import { createConversation, ensureConversation, getConversation, getMessages, g
 import { UserMessagePayloadSchema } from '../types';
 import { randomUUID } from 'crypto';
 import { ollama, abortStreamsForConversation } from '../llm/ollama';
-
+import { verifyToken, getUserFromToken } from '../auth';
 // Simple in-memory rate limiter for model:pull
 const pullRateLimiter = new Map<string, number[]>();
 const PULL_RATE_LIMIT_WINDOW = 60000; // 1 minute
@@ -20,7 +20,19 @@ function checkPullRateLimit(socketId: string): boolean {
   return true;
 }
 
- // ============ Socket Handler ============
+// ============ Socket Handler ============
+export function setupSocketHandler(io: Server, registry: AgentRegistry) {
+  io.use((socket, next) => {
+    const token = socket.handshake.auth?.token || socket.handshake.query?.token;
+    if (!token) return next(new Error('Authentication required'));
+    const payload = verifyToken(token);
+    if (!payload) return next(new Error('Invalid token'));
+    const user = getUserFromToken(token);
+    if (!user) return next(new Error('User not found'));
+    (socket as any).user = user;
+    next();
+  });
+
   io.on('connection', (socket: Socket) => {
     console.log(`Client connected: ${socket.id}`);
 
