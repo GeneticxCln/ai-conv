@@ -47,8 +47,9 @@ interface ChatState {
   stopStreaming: (messageId: string) => void;
 
   // Model pulls
-  pullProgress: Record<string, { status: string; percent: number | null }>;
+  pullProgress: Record<string, { status: string; percent: number | null; _ts: number }>;
   setPullProgress: (model: string, p: { status: string; percent: number | null }) => void;
+  clearStalePullProgress: () => void;
 }
 
 export const useChatStore = create<ChatState>()(
@@ -150,9 +151,21 @@ export const useChatStore = create<ChatState>()(
       // Model pulls
       pullProgress: {},
       setPullProgress: (model, p) =>
-        set((state) => ({
-          pullProgress: { ...state.pullProgress, [model]: p },
-        })),
+        set((state) => {
+          const now = Date.now();
+          const filtered = Object.fromEntries(
+            Object.entries(state.pullProgress).filter(([, v]) => now - (v._ts ?? 0) < 600000) // 10 min TTL
+          );
+          return { pullProgress: { ...filtered, [model]: { ...p, _ts: now } } };
+        }),
+      clearStalePullProgress: () =>
+        set((state) => {
+          const now = Date.now();
+          const filtered = Object.fromEntries(
+            Object.entries(state.pullProgress).filter(([, v]) => now - (v._ts ?? 0) < 600000)
+          );
+          return { pullProgress: filtered };
+        }),
     }),
     {
       name: 'ai-conv-chat',

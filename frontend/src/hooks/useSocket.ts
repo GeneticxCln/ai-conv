@@ -33,7 +33,6 @@ export function useSocket() {
     setMessages,
     setAgents,
     setConversations,
-    addConversation,
     setCurrentConversation,
     removeConversation,
     clearAllConversations,
@@ -61,6 +60,8 @@ export function useSocket() {
       // Request initial data
       socket.emit('personas:list');
       socket.emit('conversation:list');
+      // Clean up stale pull progress on reconnect
+      useChatStore.getState().clearStalePullProgress();
       if (useChatStore.getState().currentConversationId) {
         socket.emit('join', useChatStore.getState().currentConversationId);
       }
@@ -87,7 +88,7 @@ export function useSocket() {
     });
 
     socket.on('conversation:created', (conversation: Conversation) => {
-      addConversation(conversation);
+      // conversation:list already includes the new conversation; don't add again
       setCurrentConversation(conversation.id);
       socket.emit('join', conversation.id);
     });
