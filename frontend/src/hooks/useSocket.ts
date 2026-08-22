@@ -3,6 +3,14 @@ import { io, Socket } from 'socket.io-client';
 import { useChatStore } from '../stores/useChatStore';
 import { Message, AgentTokenPayload, AgentDonePayload, AgentErrorPayload, Persona, User, Conversation } from '../types';
 import { applyAgentToken } from '../lib/streaming';
+// Promise wrapper with timeout
+const withTimeout = <T>(promise: Promise<T>, ms: number, timeoutError: string): Promise<T> =>
+  Promise.race([
+    promise,
+    new Promise<never>((_, reject) =>
+      setTimeout(() => reject(new Error(timeoutError)), ms)
+    ),
+  ]);
 
 const WS_URL = import.meta.env.VITE_WS_URL || 'ws://localhost:3001';
 
@@ -197,10 +205,14 @@ export function useSocket() {
     const current = useChatStore.getState().messages[conversationId] || [];
     if (current.length === 0) return false;
     try {
-      const page = await socketRef.current.emitWithAck('messages:older', {
-        conversationId,
-        before: current[0]?.createdAt,
-      });
+      const page = await withTimeout(
+        socketRef.current.emitWithAck('messages:older', {
+          conversationId,
+          before: current[0]?.createdAt,
+        }),
+        8000,
+        'messages:older ack timeout'
+      );
       if (!Array.isArray(page) || page.length === 0) return false;
       useChatStore.getState().prependMessages(conversationId, page);
       return true;
@@ -227,7 +239,11 @@ export function useSocket() {
   const getModels = useCallback(async (): Promise<string[]> => {
     if (!socketRef.current?.connected) return [];
     try {
-      return await socketRef.current.emitWithAck('models:list');
+      return await withTimeout(
+        socketRef.current.emitWithAck('models:list'),
+        8000,
+        'models:list ack timeout'
+      );
     } catch {
       return [];
     }
@@ -267,12 +283,28 @@ export function useSocket() {
 
   const listUsers = useCallback(async (): Promise<User[]> => {
     if (!socketRef.current?.connected) return [];
-    try { return await socketRef.current.emitWithAck('users:list'); } catch { return []; }
+    try {
+      return await withTimeout(
+        socketRef.current.emitWithAck('users:list'),
+        8000,
+        'users:list ack timeout'
+      );
+    } catch {
+      return [];
+    }
   }, []);
 
   const createUser = useCallback(async (name: string, avatar?: string): Promise<User | null> => {
     if (!socketRef.current?.connected) return null;
-    try { return await socketRef.current.emitWithAck('user:create', { name, avatar }); } catch { return null; }
+    try {
+      return await withTimeout(
+        socketRef.current.emitWithAck('user:create', { name, avatar }),
+        8000,
+        'user:create ack timeout'
+      );
+    } catch {
+      return null;
+    }
   }, []);
 
   const deleteExistingUser = useCallback((id: string) => {
@@ -297,7 +329,15 @@ export function useSocket() {
 
   const importConversation = useCallback(async (data: { title: string; messages: Array<{ role: string; content: string; agentName?: string }> }): Promise<Conversation | null> => {
     if (!socketRef.current?.connected) return null;
-    try { return await socketRef.current.emitWithAck('conversation:import', data); } catch { return null; }
+    try {
+      return await withTimeout(
+        socketRef.current.emitWithAck('conversation:import', data),
+        15000,
+        'conversation:import ack timeout'
+      );
+    } catch {
+      return null;
+    }
   }, []);
 
   return {

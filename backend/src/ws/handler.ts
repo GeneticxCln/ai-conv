@@ -275,9 +275,10 @@ export function setupSocketHandler(io: Server, registry: AgentRegistry) {
       socket.emit('conversation:list', getConversations());
     });
 
-    // Create new conversation
     socket.on('conversation:create', (title?: string) => {
-      const conversation = createConversation(title);
+      // Defensive: normalize title at handler level (defense in depth)
+      const safeTitle = (title ?? '').trim().slice(0, 120) || 'New Conversation';
+      const conversation = createConversation(safeTitle);
       socket.emit('conversation:created', conversation);
       io.emit('conversation:list', getConversations());
     });

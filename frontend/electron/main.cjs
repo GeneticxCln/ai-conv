@@ -54,11 +54,26 @@ function createWindow() {
 
   // Content-Security-Policy for the packaged app; connect-src follows the
   // backend origins the window is allowed to reach.
+  // AI_CONV_API_ORIGIN: HTTP origin of backend (e.g. http://backend:3001)
+  // AI_CONV_WS_ORIGIN: WS origin of backend (e.g. ws://backend:3002)
+  // If WS not provided, derive from API by replacing http->ws and incrementing port by 1.
+  const apiOrigin = process.env.AI_CONV_API_ORIGIN;
+  const wsOriginEnv = process.env.AI_CONV_WS_ORIGIN;
+  let wsOriginDerived = null;
+  if (apiOrigin) {
+    try {
+      const url = new URL(apiOrigin);
+      const wsPort = url.port ? parseInt(url.port, 10) + 1 : (url.protocol === 'https:' ? 443 : 80);
+      wsOriginDerived = `ws://${url.hostname}:${wsPort}`;
+    } catch { /* ignore */ }
+  }
+  const wsOrigin = wsOriginEnv || wsOriginDerived;
   const apiOrigins = [
     'http://localhost:3001', 'http://localhost:3002',
     'ws://localhost:3001', 'ws://localhost:3002',
-    ...(process.env.AI_CONV_API_ORIGIN ? [process.env.AI_CONV_API_ORIGIN, process.env.AI_CONV_API_ORIGIN.replace(/^http/, 'ws')] : []),
   ];
+  if (apiOrigin) apiOrigins.push(apiOrigin);
+  if (wsOrigin) apiOrigins.push(wsOrigin);
   win.webContents.on('headers-received', (event, details) => {
     if (!app.isPackaged || !details.responseHeaders) return;
     details.responseHeaders['Content-Security-Policy'] = [
