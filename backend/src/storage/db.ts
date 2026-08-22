@@ -250,16 +250,17 @@ export function createMessage(
   content: string,
   agentId?: string,
   agentName?: string,
-  isStreaming = false
+  isStreaming = false,
+  id?: string
 ): Message {
   const now = new Date().toISOString();
-  const id = randomUUID();
+  const messageId = id ?? randomUUID();
   db.prepare(
     `INSERT INTO messages (id, conversation_id, role, content, agent_id, agent_name, created_at, is_streaming)
      VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
-  ).run(id, conversationId, role, content, agentId || null, agentName || null, now, isStreaming ? 1 : 0);
+  ).run(messageId, conversationId, role, content, agentId || null, agentName || null, now, isStreaming ? 1 : 0);
   return {
-    id,
+    id: messageId,
     conversationId,
     role,
     content,

@@ -3,6 +3,15 @@ import { io, Socket } from 'socket.io-client';
 import { useChatStore } from '../stores/useChatStore';
 import { Message, AgentTokenPayload, AgentDonePayload, AgentErrorPayload, Persona, User, Conversation } from '../types';
 import { applyAgentToken } from '../lib/streaming';
+
+// Browser-compatible UUID generator
+function generateId(): string {
+  return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, (c) => {
+    const r = (Math.random() * 16) | 0;
+    const v = c === 'x' ? r : (r & 0x3) | 0x8;
+    return v.toString(16);
+  });
+}
 // Promise wrapper with timeout
 const withTimeout = <T>(promise: Promise<T>, ms: number, timeoutError: string): Promise<T> =>
   Promise.race([
@@ -180,7 +189,8 @@ export function useSocket() {
   // ============ Actions ============
   const sendMessage = useCallback((conversationId: string, content: string, opts?: { agentChat?: boolean }): boolean => {
     if (!socketRef.current?.connected) return false;
-    socketRef.current.emit('user:message', { conversationId, content, agentChat: opts?.agentChat });
+    const tempId = generateId();
+    socketRef.current.emit('user:message', { conversationId, content, agentChat: opts?.agentChat, tempId });
     return true;
   }, []);
 

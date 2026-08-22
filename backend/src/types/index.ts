@@ -47,6 +47,7 @@ export const UserMessagePayloadSchema = z.object({
   conversationId: z.string().uuid(),
   content: z.string().min(1),
   agentChat: z.boolean().optional(),
+  tempId: z.string().uuid().optional(),
 });
 export type UserMessagePayload = z.infer<typeof UserMessagePayloadSchema>;
 

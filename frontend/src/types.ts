@@ -38,6 +38,13 @@ export interface User {
   avatar?: string;
 }
 
+export interface UserMessagePayload {
+  conversationId: string;
+  content: string;
+  agentChat?: boolean;
+  tempId?: string;
+}
+
 export interface AgentTokenPayload {
   conversationId: string;
   messageId: string;

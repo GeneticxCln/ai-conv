@@ -58,7 +58,7 @@ export function setupSocketHandler(io: Server, registry: AgentRegistry) {
         return;
       }
 
-      const { conversationId, content } = parsed.data;
+      const { conversationId, content, tempId } = parsed.data;
 
       try {
         // Ensure conversation exists with this exact id
@@ -73,7 +73,8 @@ export function setupSocketHandler(io: Server, registry: AgentRegistry) {
 
         // Save user message and echo it so every client (including the
         // sender) renders it immediately without a rejoin.
-        const userMessage = createMessage(conversationId, 'user', content);
+        // Preserve client's tempId for reliable dedupe.
+        const userMessage = createMessage(conversationId, 'user', content, undefined, undefined, false, tempId);
         io.emit('message:user', userMessage);
         updateConversationTimestamp(conversationId);
 
