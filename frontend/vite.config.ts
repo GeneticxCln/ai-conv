@@ -8,6 +8,9 @@ export default defineConfig(({ command }) => ({
     drop: command === 'build' ? ['console'] : [],
   },
   plugins: [react()],
+  // Relative asset URLs so the packaged Electron app can load dist/ via file://
+  // (absolute /assets paths break under the file protocol).
+  base: './',
   resolve: {
     alias: {
       '@': path.resolve(__dirname, './src'),

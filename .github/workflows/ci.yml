@@ -52,9 +52,19 @@ jobs:
           node-version: 20
       - run: npm ci --no-audit --no-fund
       - run: npx electron-builder --dir --linux
-      - name: Launch packaged binary headless
+      - name: Launch packaged binary and assert real render
         run: |
+          # The renderer must actually mount: an untitled window = white screen.
+          sudo apt-get update -qq && sudo apt-get install -y -qq xvfb xdotool
           xvfb-run -a ./dist/linux-unpacked/ai-conv --no-sandbox --disable-gpu &
           APP_PID=$!
-          sleep 10
-          kill -0 $APP_PID && echo "app stayed alive"
+          sleep 12
+          kill -0 $APP_PID || { echo "app process died"; exit 1; }
+          WID=$(xdotool search --onlyvisible --name "AI Conv" | head -1)
+          if [ -z "$WID" ]; then
+            echo "FAIL: no window titled 'AI Conv' — renderer never mounted (blank window)"
+            kill $APP_PID
+            exit 1
+          fi
+          echo "OK: window '$(xdotool getwindowname "$WID")' present"
+          kill $APP_PID
