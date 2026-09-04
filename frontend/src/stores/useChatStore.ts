@@ -1,6 +1,6 @@
 import { create } from 'zustand';
 import { persist } from 'zustand/middleware';
-import { Message, Conversation, Persona, User } from '../types';
+import { Message, Conversation, Persona, User } from '@ai-conv/types';
 
 interface ChatState {
   // Connection
@@ -144,6 +144,7 @@ export const useChatStore = create<ChatState>()(
         })),
       stopStreaming: (messageId) =>
         set((state) => {
+          if (!messageId) return { streamingMessages: {} };
           const { [messageId]: _, ...rest } = state.streamingMessages;
           return { streamingMessages: rest };
         }),

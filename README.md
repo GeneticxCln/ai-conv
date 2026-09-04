@@ -17,46 +17,45 @@ A real-time desktop (Electron) messenger where **you create your own AI personas
 
 ## Quick Start
 
-```bash
-docker compose up --build        # ollama + backend + frontend
+### Prerequisites
+- Docker & Docker Compose
+- 8GB+ RAM recommended (model-dependent)
 
-# in another terminal — the desktop app:
+```bash
+# Clone and enter directory
+cd AI-conv
+
+# Generate JWT_SECRET in .env (idempotent, safe to re-run)
+node scripts/generate-jwt-secret.mjs
+
+# Start all services (pulls llama3.1:8b on first run — may take a few minutes)
+docker compose up --build
+
+# In another terminal — the desktop app:
 cd frontend && npx electron . --no-sandbox
 ```
 
-Frontend also available at http://localhost:5173 if you prefer the browser.
+### Access
+- **Frontend**: http://localhost:5173
+- **Backend API**: http://localhost:3001
+- **Ollama API**: http://localhost:11434
 
 ## Packaging (installers)
 
 ```bash
 cd frontend
-npm run package        # builds AppImage/deb (linux), nsis (win), dmg (mac)
+npm run package        # builds the configured Linux unpacked app (see electron-builder targets)
 ```
 
 ## Tests & Lint
 
 ```bash
-cd backend  && npm test && npm run lint
-cd frontend && npm test && npm run lint
+npm test --workspace=backend
+npm test --workspace=frontend
+npm run build --workspaces
+npm run lint --workspaces
+npm run test:e2e --workspace=frontend
 ```
-
-## Socket Events
-
-| Event | Direction | Payload |
-|-------|-----------|---------|
-| `user:message` | C → S | `{ conversationId, content, agentChat? }` |
-| `generation:stop` | C → S | `conversationId` |
-| `agent:token` | S → C | `{ conversationId, messageId, agentId, agentName, token, isDone }` |
-| `agent:done` / `agent:error` | S → C | identity + content/error |
-| `persona:create/update/delete` | C → S | persona data / id |
-| `personas:list` | both | `Persona[]` |
-| `models:list` | C → S (ack) | returns installed model names |
-| `model:pull` / `model:pull:progress` | C → S / S → C | model name / `{model,status,percent}` |
-| `conversation:create/delete/rename` | C → S | title / id / `{id,title}` |
-| `conversations:clear` | C → S | — |
-
-## License
-MIT
 
 ## Architecture
 
@@ -64,7 +63,7 @@ MIT
 ┌─────────────┐     ┌─────────────┐     ┌─────────────┐
 │  Frontend   │◄───►│  Backend    │◄───►│   Ollama    │
 │  (React)    │ WS  │ (Fastify)   │ HTTP│  (LLM)      │
-│  :5173      │:3002│  :3001      │     │  :11434     │
+│  :5173      │:3001│  :3001      │     │  :11434     │
 └─────────────┘     └─────────────┘     └─────────────┘
                            │
                            ▼
@@ -74,27 +73,6 @@ MIT
                     └─────────────┘
 ```
 
-## Quick Start
-
-### Prerequisites
-- Docker & Docker Compose
-- 8GB+ RAM (for llama3.1:8b)
-
-### Run
-```bash
-# Clone and enter directory
-cd AI-conv
-
-# Start all services
-# This pulls llama3.1:8b on first run (may take a few minutes)
-docker compose up --build
-```
-
-### Access
-- **Frontend**: http://localhost:5173
-- **Backend API**: http://localhost:3001
-- **Ollama API**: http://localhost:11434
-
 ## Development
 
 ### Without Docker
@@ -102,15 +80,14 @@ docker compose up --build
 # Terminal 1: Start Ollama
 ollama serve
 
+# Install all workspaces once from the repository root
+npm ci
+
 # Terminal 2: Backend
-cd backend
-npm install
-npm run dev
+npm run dev:backend
 
 # Terminal 3: Frontend
-cd frontend
-npm install
-npm run dev
+npm run dev:frontend
 ```
 
 ### Project Structure
@@ -127,28 +104,14 @@ AI-conv/
 │   │   ├── components/
 │   │   ├── hooks/
 │   │   └── stores/
-├── config/personas/   # YAML persona definitions
+├── config/personas/   # (legacy) YAML persona definitions
 ├── docker-compose.yml
 └── package.json       # Root workspace
 ```
 
-## Adding Personas
+## Personas
 
-Create a new YAML file in `config/personas/`:
-
-```yaml
-id: "unique-id"
-name: "Persona Name"
-model: "llama3.1:8b"
-systemPrompt: |
-  Your system prompt here...
-temperature: 0.7
-enabled: true
-description: "Short description"
-avatar: "🎯"
-```
-
-Restart backend to load new personas.
+Personas are created and managed via the UI (Personas sidebar). They are stored in the SQLite database, not loaded from YAML files.
 
 ## Configuration
 
@@ -158,21 +121,40 @@ Restart backend to load new personas.
 | `CORS_ORIGIN` | `http://localhost:5173` | Frontend URL for CORS |
 | `DATABASE_PATH` | `/data/ai-conv.db` | SQLite file path |
 | `PORT` | `3001` | Backend HTTP port |
+| `JWT_SECRET` | *(required in production)* | Generate with `npm run setup`; keep stable across restarts |
 
 ## Default Models
 
-All personas use `llama3.1:8b` by default. The model-puller service automatically downloads it on first run.
+No model is hard-coded. The backend auto-detects the first model installed in Ollama when creating a persona, and the model picker lists every model you have downloaded. The Docker `model-puller` service pre-downloads `llama3.1:8b` so the stack works out of the box — you can pull any other model from the app's Settings → Models tab.
+
+## Browser E2E
+
+The Playwright suite starts both Vite and the backend. It creates a disposable local profile through `user:create`, stores the issued token in test-only browser storage, and uses `http://localhost:3001` for Socket.IO.
+
+```bash
+npm run test:e2e --workspace=frontend
+```
 
 ## Socket Events
 
 | Event | Direction | Payload |
 |-------|-----------|---------|
-| `user:message` | Client → Server | `{ conversationId, content }` |
+| `user:message` | Client → Server | `{ conversationId, content, agentChat?, tempId? }` |
+| `generation:stop` | Client → Server | `conversationId` |
 | `agent:token` | Server → Client | `{ conversationId, messageId, agentId, agentName, token, isDone }` |
 | `agent:done` | Server → Client | `{ conversationId, messageId, agentId, agentName, fullContent }` |
 | `agent:error` | Server → Client | `{ conversationId, agentId, agentName, error }` |
-| `agents:list` | Bidirectional | `Persona[]` |
-| `agent:toggle` | Client → Server | `agentId` |
+| `personas:list` | Bidirectional | `Persona[]` |
+| `persona:create/update/delete` | Client → Server | persona data / id |
+| `models:list` | Client → Server (ack) | returns installed model names |
+| `model:pull` / `model:pull:progress` | Client → Server / Server → Client | model name / `{model, status, percent}` |
+| `conversation:create/delete/rename` | Client → Server | title / id / `{id, title}` |
+| `conversations:clear` | Client → Server | — |
+| `message:delete` | Client → Server | message id |
+| `message:regenerate` | Client → Server | message id |
+| `join` | Client → Server | Authenticated conversation join; returns the first message page |
+| `messages:older` | Client → Server (ack) | `{ conversationId, before }` |
+| `conversation:import` | Client → Server (ack) | `{ title, messages }` |
 
 ## License
 MIT

@@ -1,7 +1,8 @@
 import { useState } from 'react';
-import { Persona } from '../types';
+import { Persona } from '@ai-conv/types';
 import { CheckCircle, Circle, Plus, Pencil } from 'lucide-react';
 import { cn } from '../lib/utils';
+import { InstalledModel } from '../lib/modelPicker';
 import { PersonaModal } from './PersonaModal';
 
 interface PersonaSidebarProps {
@@ -10,10 +11,11 @@ interface PersonaSidebarProps {
   onCreate: (data: Partial<Persona>) => void;
   onUpdate: (id: string, patch: Partial<Persona>) => void;
   onDelete: (id: string) => void;
-  getModels: () => Promise<string[]>;
+  getModels: () => Promise<InstalledModel[]>;
+  pullModel: (modelName: string) => void;
 }
 
-export function PersonaSidebar({ agents, onToggle, onCreate, onUpdate, onDelete, getModels }: PersonaSidebarProps) {
+export function PersonaSidebar({ agents, onToggle, onCreate, onUpdate, onDelete, getModels, pullModel }: PersonaSidebarProps) {
   const [modalOpen, setModalOpen] = useState(false);
   const [editing, setEditing] = useState<Persona | null>(null);
 
@@ -71,6 +73,7 @@ export function PersonaSidebar({ agents, onToggle, onCreate, onUpdate, onDelete,
         open={modalOpen}
         editing={editing}
         getModels={getModels}
+        pullModel={pullModel}
         onClose={() => setModalOpen(false)}
         onSave={(data) => {
           if (editing) onUpdate(editing.id, data);

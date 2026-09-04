@@ -4,20 +4,32 @@
   "private": true,
   "workspaces": [
     "backend",
-    "frontend"
+    "frontend",
+    "packages/types"
   ],
   "scripts": {
-    "dev": "concurrently 'npm:dev:*'",
+    "setup": "node scripts/generate-jwt-secret.mjs",
+    "dev": "npm run setup && concurrently 'npm:dev:*'",
     "dev:backend": "npm run dev --workspace=backend",
     "dev:frontend": "npm run dev --workspace=frontend",
+    "dev:types": "npm run dev --workspace=packages/types",
+    "serve": "bash scripts/rebuild-restart.sh",
     "build": "npm run build --workspaces",
     "lint": "npm run lint --workspaces",
     "db:push": "npm run db:push --workspace=backend"
   },
   "devDependencies": {
-    "concurrently": "^8.2.2"
+    "concurrently": "^8.2.2",
+    "esbuild": "^0.28.2"
   },
   "engines": {
     "node": ">=20.0.0"
-  }
+  },
+  "allowScripts": {
+    "better-sqlite3@13.0.3": true
+  },
+  "description": "A real-time desktop (Electron) messenger where **you create your own AI personas** — powered by local LLMs via Ollama. No hard-coded personas, no hard-coded models.",
+  "main": "index.js",
+  "keywords": [],
+  "type": "commonjs"
 }

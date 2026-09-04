@@ -1,11 +1,12 @@
 import { BaseAgent } from './base';
-import { Message } from '../types';
+import { Message } from '@ai-conv/types';
 import { createMessage, updateMessageContent } from '../storage/db';
 import { registerStream, releaseStream } from '../llm/ollama';
 
 // ============ Default Agent Implementation ============
 export class DefaultAgent extends BaseAgent {
   async handleUserMessage(conversationId: string, userMessage: string, history: Message[]) {
+    console.log('[DefaultAgent] Handling message:', conversationId, userMessage.slice(0, 50));
     // Create agent message entry (streaming)
     const agentMessage = createMessage(
       conversationId,
@@ -21,12 +22,17 @@ export class DefaultAgent extends BaseAgent {
     let fullContent = '';
     let aborted = false;
     try {
-      for await (const chunk of this.streamResponse(conversationId, history, userMessage, controller.signal)) {
+      console.log('[DefaultAgent] Starting stream for model:', this.persona.model);
+      let tokenCount = 0;
+      for await (const chunk of this.streamResponse(conversationId, history, userMessage, controller.signal, agentMessage.id)) {
         fullContent += chunk.token;
+        tokenCount++;
         updateMessageContent(agentMessage.id, fullContent, !chunk.done);
       }
+      console.log('[DefaultAgent] Stream done, tokens:', tokenCount, 'content length:', fullContent.length);
       updateMessageContent(agentMessage.id, fullContent, false);
       this.emitDone(conversationId, agentMessage.id, fullContent);
+      console.log('[DefaultAgent] emitDone called');
     } catch (error: any) {
       aborted = error?.name === 'AbortError' || controller.signal.aborted;
       if (aborted) {
@@ -50,7 +56,7 @@ export class DefaultAgent extends BaseAgent {
     const controller = registerStream(key);
     let fullContent = '';
     try {
-      for await (const chunk of this.streamResponse(conversationId, history, '', controller.signal)) {
+      for await (const chunk of this.streamResponse(conversationId, history, '', controller.signal, agentMessage.id)) {
         fullContent += chunk.token;
         updateMessageContent(agentMessage.id, fullContent, !chunk.done);
       }

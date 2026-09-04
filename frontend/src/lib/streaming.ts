@@ -1,4 +1,4 @@
-import { Message, AgentTokenPayload } from '../types';
+import { Message, AgentTokenPayload } from '@ai-conv/types';
 
 /**
  * Pure reducer for agent token streaming: given the current messages for a

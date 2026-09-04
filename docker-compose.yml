@@ -1,4 +1,17 @@
 services:
+  redis:
+    image: redis:7-alpine
+    container_name: ai-conv-redis
+    command: redis-server --appendonly yes
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+    restart: unless-stopped
+
   ollama:
     image: ollama/ollama:latest
     container_name: ai-conv-ollama
@@ -12,6 +25,21 @@ services:
       start_period: 30s
     restart: unless-stopped
 
+  model-puller:
+    image: ollama/ollama:latest
+    container_name: ai-conv-model-puller
+    environment:
+      - OLLAMA_HOST=http://ollama:11434
+    # qwen2.5:0.5b MUST stay the smallest chat model here — the E2E suite
+    # auto-selects the smallest chat model, so this keeps local compose runs
+    # on the same model as CI (which pulls qwen2.5:0.5b only). llama3.1:8b is
+    # a solid default for real chatting.
+    command: ["sh", "-c", "ollama pull qwen2.5:0.5b && ollama pull nomic-embed-text && ollama pull llama3.1:8b"]
+    depends_on:
+      ollama:
+        condition: service_healthy
+    restart: "no"
+
   backend:
     build:
       context: .
@@ -19,32 +47,38 @@ services:
     container_name: ai-conv-backend
     ports:
       - "3001:3001"
-      - "3002:3002"  # Socket.io port
     environment:
-      - NODE_ENV=development
+      - NODE_ENV=production
       - OLLAMA_HOST=http://ollama:11434
-      - CORS_ORIGIN=http://localhost:5173
+      - CORS_ORIGIN=${CORS_ORIGIN:-http://localhost:5173}
       - PORT=3001
       - DATABASE_PATH=/data/ai-conv.db
-      - PERSONAS_DIR=/config/personas
+      - JWT_SECRET=${JWT_SECRET:?Set JWT_SECRET before starting}
+      - REDIS_URL=redis://redis:6379
     volumes:
-      - ./backend:/app
-      - /app/node_modules
-      - ./config:/config:ro
       - sqlite_data:/data
+      - ./config:/config:ro
     depends_on:
       ollama:
         condition: service_healthy
+      redis:
+        condition: service_healthy
     restart: unless-stopped
-    command: npm run dev
+    command: node backend/dist/index.js
 
   frontend:
     build:
-      context: ./frontend
-      dockerfile: Dockerfile
+      context: .
+      dockerfile: frontend/Dockerfile
+      args:
+        VITE_WS_URL: ${VITE_WS_URL:-http://localhost:3001}
+        VITE_API_URL: ${VITE_API_URL:-http://localhost:3001}
     container_name: ai-conv-frontend
     ports:
       - "5173:5173"
+    environment:
+      - VITE_WS_URL=${VITE_WS_URL:-http://localhost:3001}
+      - VITE_API_URL=${VITE_API_URL:-http://localhost:3001}
     depends_on:
       - backend
     restart: unless-stopped
@@ -52,6 +86,7 @@ services:
 volumes:
   ollama_data:
   sqlite_data:
+  redis_data:
 
 networks:
   default:

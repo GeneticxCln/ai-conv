@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { applyAgentToken } from './streaming';
-import { Message } from '../types';
+import { Message } from '@ai-conv/types';
 
 const base: Message = {
   id: 'm1',

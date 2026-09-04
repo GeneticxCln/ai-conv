@@ -1,0 +1,13 @@
+node_modules
+**/node_modules
+dist
+**/dist
+.git
+.env
+*.db
+*.db-shm
+*.db-wal
+data
+backend/data
+frontend/build
+frontend/resources/backend

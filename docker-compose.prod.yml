@@ -1,0 +1,76 @@
+services:
+  ollama:
+    image: ollama/ollama:latest
+    container_name: ai-conv-ollama
+    volumes:
+      - ollama_data:/root/.ollama
+    healthcheck:
+      test: ["CMD", "ollama", "list"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          memory: 8G
+
+  model-puller:
+    image: ollama/ollama:latest
+    container_name: ai-conv-model-puller
+    environment:
+      - OLLAMA_HOST=http://ollama:11434
+    command: ["pull", "llama3.1:8b"]
+    depends_on:
+      ollama:
+        condition: service_healthy
+    restart: "no"
+
+  backend:
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
+    container_name: ai-conv-backend
+    ports:
+      - "3001:3001"
+    environment:
+      - NODE_ENV=production
+      - OLLAMA_HOST=http://ollama:11434
+      - CORS_ORIGIN=${CORS_ORIGIN:-http://localhost:5173}
+      - PORT=3001
+      - DATABASE_PATH=/data/ai-conv.db
+      - JWT_SECRET=${JWT_SECRET:?Set JWT_SECRET before starting production}
+    volumes:
+      - sqlite_data:/data
+      - ./config:/config:ro
+    depends_on:
+      ollama:
+        condition: service_healthy
+    restart: unless-stopped
+    command: node backend/dist/index.js
+
+  frontend:
+    build:
+      context: .
+      dockerfile: frontend/Dockerfile
+      args:
+        VITE_WS_URL: ${VITE_WS_URL:-http://localhost:3001}
+        VITE_API_URL: ${VITE_API_URL:-http://localhost:3001}
+    container_name: ai-conv-frontend
+    ports:
+      - "5173:5173"
+    environment:
+      - VITE_WS_URL=${VITE_WS_URL:-http://localhost:3001}
+      - VITE_API_URL=${VITE_API_URL:-http://localhost:3001}
+    depends_on:
+      - backend
+    restart: unless-stopped
+
+volumes:
+  ollama_data:
+  sqlite_data:
+
+networks:
+  default:
+    name: ai-conv-network

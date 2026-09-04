@@ -1,377 +1,46 @@
-import { useEffect, useRef, useCallback } from 'react';
-import { io, Socket } from 'socket.io-client';
+import { useSocketConnection } from './useSocketConnection';
+import { useSocketEvents } from './useSocketEvents';
+import { useSocketActions } from './useSocketActions';
 import { useChatStore } from '../stores/useChatStore';
-import { Message, AgentTokenPayload, AgentDonePayload, AgentErrorPayload, Persona, User, Conversation } from '../types';
-import { applyAgentToken } from '../lib/streaming';
 
-// Browser-compatible UUID generator
-function generateId(): string {
-  return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, (c) => {
-    const r = (Math.random() * 16) | 0;
-    const v = c === 'x' ? r : (r & 0x3) | 0x8;
-    return v.toString(16);
-  });
-}
-// Promise wrapper with timeout
-const withTimeout = <T>(promise: Promise<T>, ms: number, timeoutError: string): Promise<T> =>
-  Promise.race([
-    promise,
-    new Promise<never>((_, reject) =>
-      setTimeout(() => reject(new Error(timeoutError)), ms)
-    ),
-  ]);
-
-const WS_URL = import.meta.env.VITE_WS_URL || 'ws://localhost:3001';
-
-// ============ Socket Hook ============
+/**
+ * Main socket hook - combines connection, events, and actions.
+ * This is the primary hook components should use.
+ */
 export function useSocket() {
-  const socketRef = useRef<Socket | null>(null);
-  const {
-    setConnected,
-    addMessage,
-    updateMessage,
-    setMessages,
-    setAgents,
-    setConversations,
-    setCurrentConversation,
-    removeConversation,
-    clearAllConversations,
-    removeMessage,
-    startStreaming,
-    stopStreaming,
+  const currentConversationId = useChatStore((s) => s.currentConversationId);
+
+  // Connection management
+  const connection = useSocketConnection();
+
+  // Event handlers (updates store from incoming events)
+  useSocketEvents({
+    onEvent: connection.onEvent,
+    emitWithAck: connection.emitWithAck,
+    connected: connection.connected,
+    usingBridge: connection.usingBridge,
     currentConversationId,
-  } = useChatStore();
+  });
 
-  // Socket lifecycle: connect once per mount; never re-runs on conversation switch.
-  useEffect(() => {
-    const socket = io(WS_URL, {
-      transports: ['websocket', 'polling'],
-      reconnection: true,
-      reconnectionAttempts: 10,
-      reconnectionDelay: 1000,
-      autoConnect: true,
-    });
+  // Actions (outgoing emits)
+  const actions = useSocketActions({
+    emit: connection.emit,
+    emitWithAck: connection.emitWithAck,
+    applyAuthToken: connection.applyAuthToken,
+    connected: connection.connected,
+  });
 
-    socketRef.current = socket;
-
-    socket.on('connect', () => {
-      console.log('Socket connected:', socket.id);
-      setConnected(true);
-      // Request initial data
-      socket.emit('personas:list');
-      socket.emit('conversation:list');
-      // Clean up stale pull progress on reconnect
-      useChatStore.getState().clearStalePullProgress();
-      if (useChatStore.getState().currentConversationId) {
-        socket.emit('join', useChatStore.getState().currentConversationId);
-      }
-      // Don't auto-create conversation on connect - user can create via UI
-    });
-
-    socket.on('disconnect', () => {
-      console.log('Socket disconnected');
-      setConnected(false);
-    });
-
-    socket.on('connect_error', (err) => {
-      console.error('Socket connection error:', err);
-      setConnected(false);
-    });
-
-    // Personas
-    socket.on('personas:list', (personas: Persona[]) => {
-      setAgents(personas);
-    });
-
-    socket.on('conversation:list', (conversations: Conversation[]) => {
-      setConversations(conversations);
-    });
-
-    socket.on('conversation:created', (conversation: Conversation) => {
-      // conversation:list already includes the new conversation; don't add again
-      setCurrentConversation(conversation.id);
-      socket.emit('join', conversation.id);
-    });
-
-    socket.on('messages:history', ({ conversationId, messages }: { conversationId: string; messages: Message[] }) => {
-      setMessages(conversationId, messages);
-    });
-
-    socket.on('conversation:deleted', (id: string) => {
-      removeConversation(id);
-    });
-
-    socket.on('conversations:cleared', () => {
-      clearAllConversations();
-    });
-
-    socket.on('model:pull:progress', (p: { model: string; status: string; percent: number | null }) => {
-      useChatStore.getState().setPullProgress(p.model, { status: p.status, percent: p.percent });
-    });
-
-    socket.on('message:deleted', ({ conversationId, id }: { conversationId: string; id: string }) => {
-      removeMessage(conversationId, id);
-    });
-
-    // Own message echoed by the server after persist (see backend handler).
-    socket.on('message:user', (message: Message) => {
-      const existing = useChatStore.getState().messages[message.conversationId] || [];
-      if (!existing.some((m) => m.id === message.id)) {
-        addMessage(message.conversationId, message);
-      }
-    });
-
-    // Messages - Agent token streaming (pure reducer in lib/streaming.ts)
-    socket.on('agent:token', (payload: AgentTokenPayload) => {
-      const { conversationId, messageId, agentId, isDone } = payload;
-
-      if (isDone) {
-        // Message complete - content update handled by agent:done
-        stopStreaming(messageId);
-        return;
-      }
-
-      const existing = useChatStore.getState().messages[conversationId] || [];
-      const next = applyAgentToken(existing, payload);
-      setMessages(conversationId, next);
-
-      if (next.length > existing.length) {
-        startStreaming(messageId, agentId);
-      }
-    });
-
-    socket.on('agent:done', (payload: AgentDonePayload) => {
-      const { conversationId, messageId, fullContent } = payload;
-      updateMessage(conversationId, messageId, {
-        content: fullContent,
-        isStreaming: false,
-      });
-      stopStreaming(messageId);
-    });
-
-    socket.on('agent:error', (payload: AgentErrorPayload) => {
-      const { conversationId, agentId, error } = payload;
-      // Find streaming message for this agent and mark error
-      const messages = useChatStore.getState().messages[conversationId] || [];
-      const streamingMsg = messages.find(
-        (m) => m.agentId === agentId && m.isStreaming
-      );
-      if (streamingMsg) {
-        updateMessage(conversationId, streamingMsg.id, {
-          content: `[Error: ${error}]`,
-          isStreaming: false,
-        });
-        stopStreaming(streamingMsg.id);
-      }
-    });
-
-    return () => {
-      socket.disconnect();
-    };
-    // Handlers close over store actions (stable) and read live state via
-    // getState(); the socket must connect once per mount, not per render.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
-
-  // Room membership: re-join the current conversation after reconnect.
-  useEffect(() => {
-    const socket = socketRef.current;
-    if (!socket) return;
-    const onConnect = () => {
-      if (currentConversationId) socket.emit('join', currentConversationId);
-    };
-    socket.on('connect', onConnect);
-    return () => {
-      socket.off('connect', onConnect);
-    };
-  }, [currentConversationId]);
-
-  // ============ Actions ============
-  const sendMessage = useCallback((conversationId: string, content: string, opts?: { agentChat?: boolean }): boolean => {
-    if (!socketRef.current?.connected) return false;
-    const tempId = generateId();
-    socketRef.current.emit('user:message', { conversationId, content, agentChat: opts?.agentChat, tempId });
-    return true;
-  }, []);
-
-  const joinConversation = useCallback((conversationId: string) => {
-    if (!socketRef.current?.connected) return;
-    socketRef.current.emit('join', conversationId);
-  }, []);
-
-  const leaveConversation = useCallback((conversationId: string) => {
-    if (!socketRef.current?.connected) return;
-    socketRef.current.emit('leave', conversationId);
-  }, []);
-  const toggleAgent = useCallback((agentId: string) => {
-    if (!socketRef.current?.connected) return;
-    const p = useChatStore.getState().agents.find(a => a.id === agentId);
-    if (p) socketRef.current.emit('persona:update', { id: agentId, patch: { enabled: !p.enabled } });
-  }, []);
-
-  /** Fetch one older page (ack) and prepend it; returns false when exhausted/offline. */
-  const loadOlderMessages = useCallback(async (conversationId: string): Promise<boolean> => {
-    if (!socketRef.current?.connected) return false;
-    const current = useChatStore.getState().messages[conversationId] || [];
-    if (current.length === 0) return false;
-    try {
-      const page = await withTimeout(
-        socketRef.current.emitWithAck('messages:older', {
-          conversationId,
-          before: current[0]?.createdAt,
-        }),
-        8000,
-        'messages:older ack timeout'
-      );
-      if (!Array.isArray(page) || page.length === 0) return false;
-      useChatStore.getState().prependMessages(conversationId, page);
-      return true;
-    } catch {
-      return false;
-    }
-  }, []);
-
-  const createPersona = useCallback((data: Partial<Persona>) => {
-    if (!socketRef.current?.connected) return;
-    socketRef.current.emit('persona:create', data);
-  }, []);
-
-  const updatePersona = useCallback((id: string, patch: Partial<Persona>) => {
-    if (!socketRef.current?.connected) return;
-    socketRef.current.emit('persona:update', { id, patch });
-  }, []);
-
-  const deletePersona = useCallback((id: string) => {
-    if (!socketRef.current?.connected) return;
-    socketRef.current.emit('persona:delete', id);
-  }, []);
-
-  const getModels = useCallback(async (): Promise<string[]> => {
-    if (!socketRef.current?.connected) return [];
-    try {
-      return await withTimeout(
-        socketRef.current.emitWithAck('models:list'),
-        8000,
-        'models:list ack timeout'
-      );
-    } catch {
-      return [];
-    }
-  }, []);
-
-  const deleteConversation = useCallback((id: string) => {
-    if (!socketRef.current?.connected) return;
-    socketRef.current.emit('conversation:delete', id);
-  }, []);
-
-  const renameConversation = useCallback((id: string, title: string) => {
-    if (!socketRef.current?.connected) return;
-    socketRef.current.emit('conversation:rename', { id, title });
-  }, []);
-
-  const clearConversations = useCallback(() => {
-    if (!socketRef.current?.connected) return;
-    socketRef.current.emit('conversations:clear');
-  }, []);
-
-  const createConversation = useCallback((title?: string) => {
-    if (!socketRef.current?.connected) return;
-    // Backend's NOT NULL guard crashed on an explicit `undefined` title; omit
-    // the argument entirely so the server default applies.
-    if (title && title.trim()) socketRef.current.emit('conversation:create', title.trim());
-    else socketRef.current.emit('conversation:create');
-  }, []);
-  const stopGeneration = useCallback((conversationId: string) => {
-    if (!socketRef.current?.connected) return;
-    socketRef.current.emit('generation:stop', conversationId);
-  }, []);
-
-  const pullModel = useCallback((modelName: string) => {
-    if (!socketRef.current?.connected) return;
-    socketRef.current.emit('model:pull', modelName);
-  }, []);
-
-  const listUsers = useCallback(async (): Promise<User[]> => {
-    if (!socketRef.current?.connected) return [];
-    try {
-      return await withTimeout(
-        socketRef.current.emitWithAck('users:list'),
-        8000,
-        'users:list ack timeout'
-      );
-    } catch {
-      return [];
-    }
-  }, []);
-
-  const createUser = useCallback(async (name: string, avatar?: string): Promise<User | null> => {
-    if (!socketRef.current?.connected) return null;
-    try {
-      return await withTimeout(
-        socketRef.current.emitWithAck('user:create', { name, avatar }),
-        8000,
-        'user:create ack timeout'
-      );
-    } catch {
-      return null;
-    }
-  }, []);
-
-  const deleteExistingUser = useCallback((id: string) => {
-    if (!socketRef.current?.connected) return;
-    socketRef.current.emit('user:delete', id);
-  }, []);
-
-  const setParticipants = useCallback((conversationId: string, personaIds: string[]) => {
-    if (!socketRef.current?.connected) return;
-    socketRef.current.emit('participants:set', { conversationId, personaIds });
-  }, []);
-
-  const deleteMessage = useCallback((id: string) => {
-    if (!socketRef.current?.connected) return;
-    socketRef.current.emit('message:delete', id);
-  }, []);
-
-  const regenerateMessage = useCallback((id: string) => {
-    if (!socketRef.current?.connected) return;
-    socketRef.current.emit('message:regenerate', id);
-  }, []);
-
-  const importConversation = useCallback(async (data: { title: string; messages: Array<{ role: string; content: string; agentName?: string }> }): Promise<Conversation | null> => {
-    if (!socketRef.current?.connected) return null;
-    try {
-      return await withTimeout(
-        socketRef.current.emitWithAck('conversation:import', data),
-        15000,
-        'conversation:import ack timeout'
-      );
-    } catch {
-      return null;
-    }
-  }, []);
-
+  // Return combined API
   return {
-    sendMessage,
-    joinConversation,
-    loadOlderMessages,
-    leaveConversation,
-    toggleAgent,
-    createPersona,
-    updatePersona,
-    deletePersona,
-    getModels,
-    createConversation,
-    deleteConversation,
-    renameConversation,
-    clearConversations,
-    stopGeneration,
-    pullModel,
-    listUsers,
-    createUser,
-    deleteExistingUser,
-    setParticipants,
-    deleteMessage,
-    regenerateMessage,
-    importConversation,
+    // Connection state
+    connected: connection.connected,
+    usingBridge: connection.usingBridge,
+
+    // Connection control
+    connect: connection.connect,
+    disconnect: connection.disconnect,
+
+    // All actions
+    ...actions,
   };
 }

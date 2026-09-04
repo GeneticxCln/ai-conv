@@ -1,11 +1,11 @@
 import { useState } from 'react';
 import { User as UserIcon, Plus, Trash2 } from 'lucide-react';
-import { User } from '../types';
+import { User } from '@ai-conv/types';
 
 interface LoginModalProps {
   open: boolean;
   users: User[];
-  onPick: (u: User) => void;
+  onPick: (u: User) => void | Promise<void>;
   onCreate: (name: string, avatar?: string) => Promise<User | null>;
   onDeleteUser: (id: string) => void;
   onClose?: () => void;
@@ -14,8 +14,10 @@ interface LoginModalProps {
 const AVATARS = ['🙂', '😎', '🦊', '🐼', '🚀', '🌟', '🎧', '🐙'];
 
 export function LoginModal({ open, users, onPick, onCreate, onDeleteUser, onClose }: LoginModalProps) {
-  // Form state initializes per mount; Chat remounts this modal via `key`.
-  const [mode, setMode] = useState<'pick' | 'create'>(users.length === 0 ? 'create' : 'pick');
+  // When there are no users, always create; otherwise user can toggle into create mode
+  const [isCreating, setIsCreating] = useState(false);
+  const mode = users.length === 0 || isCreating ? 'create' : 'pick';
+
   const [name, setName] = useState('');
   const [avatar, setAvatar] = useState('🙂');
   const [busy, setBusy] = useState(false);
@@ -38,7 +40,7 @@ export function LoginModal({ open, users, onPick, onCreate, onDeleteUser, onClos
             {users.map((u) => (
               <div key={u.id} className="flex items-center gap-2">
                 <button
-                  onClick={() => { onPick(u); onClose?.(); }}
+                  onClick={async () => { await onPick(u); onClose?.(); }}
                   className="flex-1 flex items-center gap-3 px-3 py-2.5 rounded-lg bg-gray-50 dark:bg-gray-700/50 hover:bg-blue-50 dark:hover:bg-blue-900/30 text-left"
                 >
                   <span className="text-xl">{u.avatar || '🙂'}</span>
@@ -74,7 +76,7 @@ export function LoginModal({ open, users, onPick, onCreate, onDeleteUser, onClos
               </div>
             ))}
             <button
-              onClick={() => setMode('create')}
+              onClick={() => setIsCreating(true)}
               className="w-full flex items-center justify-center gap-2 px-3 py-2.5 rounded-lg border border-dashed border-gray-300 dark:border-gray-600 text-sm text-gray-500 dark:text-gray-400 hover:border-blue-400 hover:text-blue-600"
             >
               <Plus className="w-4 h-4" /> New profile
@@ -104,7 +106,7 @@ export function LoginModal({ open, users, onPick, onCreate, onDeleteUser, onClos
             </div>
             <div className="flex justify-end gap-2">
               {users.length > 0 && (
-                <button onClick={() => setMode('pick')} className="px-4 py-2 text-sm text-gray-600 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700 rounded-lg">
+                <button onClick={() => setIsCreating(false)} className="px-4 py-2 text-sm text-gray-600 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700 rounded-lg">
                   Back
                 </button>
               )}
@@ -114,7 +116,7 @@ export function LoginModal({ open, users, onPick, onCreate, onDeleteUser, onClos
                   setBusy(true);
                   const u = await onCreate(name.trim(), avatar);
                   setBusy(false);
-                  if (u) { onPick(u); onClose?.(); }
+                  if (u) onClose?.();
                 }}
                 className="px-4 py-2 text-sm font-medium rounded-lg bg-blue-600 text-white hover:bg-blue-700 disabled:opacity-40"
               >

@@ -2,7 +2,7 @@ import { memo, useState } from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { Copy, Check, Trash2, RefreshCw } from 'lucide-react';
-import { Message } from '../types';
+import { Message } from '@ai-conv/types';
 import { cn } from '../lib/utils';
 
 interface MessageBubbleProps {

@@ -11,7 +11,7 @@ vi.stubGlobal('localStorage', {
 // Static import cannot work here: the store must load AFTER the localStorage
 // stub exists (see comment above).
 const { useChatStore } = await import('./useChatStore');
-import type { Conversation, Message, Persona } from '../types';
+import type { Conversation, Message, Persona } from '@ai-conv/types';
 
 const conv = (id: string): Conversation => ({
   id,
@@ -36,6 +36,7 @@ const persona = (id: string, enabled = true): Persona => ({
   systemPrompt: 'be brief',
   temperature: 0.7,
   enabled,
+  enabledTools: false,
 });
 
 describe('useChatStore reducers', () => {

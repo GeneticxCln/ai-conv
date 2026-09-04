@@ -1,249 +1,283 @@
 import Database, { Database as DatabaseType } from 'better-sqlite3';
-import { join } from 'path';
+import { join, dirname } from 'path';
 import { mkdirSync } from 'fs';
-import { Conversation, Message } from '../types';
+import { Conversation, Message, Persona } from '@ai-conv/types';
 import { randomUUID } from 'crypto';
+import { migrate } from './migrate.js';
 
 const DB_PATH = process.env.DATABASE_PATH || join(process.cwd(), 'data', 'ai-conv.db');
+mkdirSync(dirname(DB_PATH), { recursive: true });
 
-mkdirSync(join(DB_PATH, '..'), { recursive: true });
-
+// This is the only application SQLite handle. Every query and migration uses it.
 export const db: DatabaseType = new Database(DB_PATH);
 db.pragma('journal_mode = WAL');
+db.pragma('foreign_keys = ON');
+migrate(db);
 
-export function migrate() {
-  db.exec(`
-    CREATE TABLE IF NOT EXISTS conversations (
-      id TEXT PRIMARY KEY,
-      title TEXT NOT NULL DEFAULT 'New Conversation',
-      created_at TEXT NOT NULL,
-      updated_at TEXT NOT NULL
-    );
-
-    CREATE TABLE IF NOT EXISTS messages (
-      id TEXT PRIMARY KEY,
-      conversation_id TEXT NOT NULL,
-      role TEXT NOT NULL CHECK (role IN ('user', 'agent', 'system')),
-      content TEXT NOT NULL,
-      agent_id TEXT,
-      agent_name TEXT,
-      created_at TEXT NOT NULL,
-      is_streaming INTEGER NOT NULL DEFAULT 0,
-      FOREIGN KEY (conversation_id) REFERENCES conversations (id) ON DELETE CASCADE
-    );
-
-    CREATE INDEX IF NOT EXISTS idx_messages_conversation ON messages (conversation_id);
-    CREATE INDEX IF NOT EXISTS idx_messages_created_at ON messages (created_at);
-
-    CREATE TABLE IF NOT EXISTS personas (
-      id TEXT PRIMARY KEY,
-      name TEXT NOT NULL,
-      model TEXT NOT NULL DEFAULT 'llama3.1:8b',
-      system_prompt TEXT NOT NULL,
-      temperature REAL NOT NULL DEFAULT 0.7,
-      enabled INTEGER NOT NULL DEFAULT 1,
-      description TEXT,
-      avatar TEXT,
-      created_at TEXT NOT NULL
-    );
-
-    CREATE TABLE IF NOT EXISTS users (
-      id TEXT PRIMARY KEY,
-      name TEXT NOT NULL,
-      avatar TEXT,
-      created_at TEXT NOT NULL
-    );
-  `);
-
-  // Lightweight column migrations
-  const convCols = db.prepare("PRAGMA table_info(conversations)").all() as any[];
-  const colNames = convCols.map(c => c.name);
-  if (!colNames.includes('user_id')) {
-    db.exec("ALTER TABLE conversations ADD COLUMN user_id TEXT");
-  }
-  if (!colNames.includes('participants')) {
-    db.exec("ALTER TABLE conversations ADD COLUMN participants TEXT");
-  }
+export interface PersonaRow extends Persona {
+  userId?: string;
+  created_at?: string;
 }
 
-migrate();
-
-// ============ Personas (user-created, stored in DB) ============
-export interface PersonaRow {
-  id: string;
-  name: string;
-  model: string;
-  systemPrompt: string;
-  temperature: number;
-  enabled: boolean;
-  description?: string;
-  avatar?: string;
+function mapPersonaRow(row: any): PersonaRow {
+  return {
+    id: row.id,
+    name: row.name,
+    model: row.model,
+    systemPrompt: row.system_prompt,
+    temperature: Number(row.temperature),
+    enabled: Boolean(row.enabled),
+    enabledTools: Boolean(row.enabledTools),
+    description: row.description || undefined,
+    avatar: row.avatar || undefined,
+    userId: row.user_id || undefined,
+    created_at: row.created_at,
+  };
 }
 
-export function createPersonaRow(p: PersonaRow): PersonaRow {
+export function createPersonaRow(persona: PersonaRow, userId: string): PersonaRow {
+  const owned = { ...persona, userId };
   db.prepare(
-    `INSERT INTO personas (id, name, model, system_prompt, temperature, enabled, description, avatar, created_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
-  ).run(p.id, p.name, p.model, p.systemPrompt, p.temperature, p.enabled ? 1 : 0, p.description || null, p.avatar || null, new Date().toISOString());
-  return p;
+    `INSERT INTO personas
+      (id, name, model, system_prompt, temperature, enabled, enabledTools, description, avatar, user_id, created_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+  ).run(
+    owned.id,
+    owned.name,
+    owned.model,
+    owned.systemPrompt,
+    owned.temperature,
+    owned.enabled ? 1 : 0,
+    owned.enabledTools ? 1 : 0,
+    owned.description || null,
+    owned.avatar || null,
+    userId,
+    new Date().toISOString(),
+  );
+  return owned;
 }
 
-export function getPersonas(): PersonaRow[] {
-  const rows = db.prepare('SELECT * FROM personas ORDER BY created_at ASC').all() as any[];
-  return rows.map(r => ({
-    id: r.id,
-    name: r.name,
-    model: r.model,
-    systemPrompt: r.system_prompt,
-    temperature: r.temperature,
-    enabled: Boolean(r.enabled),
-    description: r.description || undefined,
-    avatar: r.avatar || undefined,
-  }));
+export function getPersonas(userId?: string): PersonaRow[] {
+  const rows = (userId
+    ? db.prepare('SELECT * FROM personas WHERE user_id = ? ORDER BY created_at ASC').all(userId)
+    : db.prepare('SELECT * FROM personas ORDER BY created_at ASC').all()) as any[];
+  return rows.map(mapPersonaRow);
 }
 
-export function updatePersonaRow(id: string, patch: Partial<PersonaRow>): PersonaRow | null {
-  const existing = db.prepare('SELECT * FROM personas WHERE id = ?').get(id) as any;
+export function getPersona(id: string, userId: string): PersonaRow | null {
+  const row = db.prepare('SELECT * FROM personas WHERE id = ? AND user_id = ?').get(id, userId) as any;
+  return row ? mapPersonaRow(row) : null;
+}
+
+export function updatePersonaRow(id: string, userId: string, patch: Partial<Persona>): PersonaRow | null {
+  const existing = getPersona(id, userId);
   if (!existing) return null;
+
   const merged = {
     name: patch.name ?? existing.name,
     model: patch.model ?? existing.model,
-    systemPrompt: patch.systemPrompt ?? existing.system_prompt,
+    systemPrompt: patch.systemPrompt ?? existing.systemPrompt,
     temperature: patch.temperature ?? existing.temperature,
-    enabled: (patch.enabled ?? Boolean(existing.enabled)) ? 1 : 0,
+    enabled: patch.enabled ?? existing.enabled,
+    enabledTools: patch.enabledTools ?? existing.enabledTools,
     description: patch.description ?? existing.description,
     avatar: patch.avatar ?? existing.avatar,
   };
+
   db.prepare(
-    `UPDATE personas SET name=?, model=?, system_prompt=?, temperature=?, enabled=?, description=?, avatar=? WHERE id=?`
-  ).run(merged.name, merged.model, merged.systemPrompt, merged.temperature, merged.enabled, merged.description, merged.avatar, id);
-  return { id, ...merged, enabled: Boolean(merged.enabled), description: merged.description || undefined, avatar: merged.avatar || undefined } as PersonaRow;
+    `UPDATE personas
+     SET name = ?, model = ?, system_prompt = ?, temperature = ?, enabled = ?,
+         enabledTools = ?, description = ?, avatar = ?
+     WHERE id = ? AND user_id = ?`
+  ).run(
+    merged.name,
+    merged.model,
+    merged.systemPrompt,
+    merged.temperature,
+    merged.enabled ? 1 : 0,
+    merged.enabledTools ? 1 : 0,
+    merged.description || null,
+    merged.avatar || null,
+    id,
+    userId,
+  );
+
+  return { ...existing, ...merged, userId };
 }
 
-export function deletePersonaRow(id: string): boolean {
-  const res = db.prepare('DELETE FROM personas WHERE id = ?').run(id);
-  return res.changes > 0;
+export function deletePersonaRow(id: string, userId: string): boolean {
+  return db.prepare('DELETE FROM personas WHERE id = ? AND user_id = ?').run(id, userId).changes > 0;
 }
 
-migrate();
-
-// ============ Users ============
 export interface UserRow {
   id: string;
   name: string;
   avatar?: string;
+  created_at: string;
+}
+
+export function getUsers(): UserRow[] {
+  return db.prepare('SELECT id, name, avatar, created_at FROM users ORDER BY created_at ASC').all() as UserRow[];
+}
+
+export function getUser(id: string): UserRow | null {
+  return db.prepare('SELECT id, name, avatar, created_at FROM users WHERE id = ?').get(id) as UserRow | null;
 }
 
 export function createUser(name: string, avatar?: string): UserRow {
   const id = randomUUID();
+  const createdAt = new Date().toISOString();
   db.prepare('INSERT INTO users (id, name, avatar, created_at) VALUES (?, ?, ?, ?)')
-    .run(id, name.slice(0, 40), avatar || null, new Date().toISOString());
-  return { id, name: name.slice(0, 40), avatar };
+    .run(id, name.slice(0, 40), avatar || null, createdAt);
+  return { id, name: name.slice(0, 40), avatar, created_at: createdAt };
 }
 
-export function getUsers(): UserRow[] {
-  return (db.prepare('SELECT id, name, avatar FROM users ORDER BY created_at ASC').all() as any[])
-    .map(r => ({ id: r.id, name: r.name, avatar: r.avatar || undefined }));
+export function claimUnownedData(userId: string): void {
+  const transaction = db.transaction(() => {
+    db.prepare('UPDATE conversations SET user_id = ? WHERE user_id IS NULL').run(userId);
+    db.prepare('UPDATE personas SET user_id = ? WHERE user_id IS NULL').run(userId);
+  });
+  transaction();
 }
 
 export function deleteUserRow(id: string): boolean {
-  db.prepare('UPDATE conversations SET user_id = NULL WHERE user_id = ?').run(id);
-  return db.prepare('DELETE FROM users WHERE id = ?').run(id).changes > 0;
+  const transaction = db.transaction(() => {
+    db.prepare('DELETE FROM conversations WHERE user_id = ?').run(id);
+    db.prepare('DELETE FROM personas WHERE user_id = ?').run(id);
+    return db.prepare('DELETE FROM users WHERE id = ?').run(id).changes > 0;
+  });
+  return transaction();
 }
 
-// ============ Conversations ============
-export interface ConversationFull extends Conversation {
-  userId?: string;
-  participants?: string[];
-}
-
-export function createConversation(title?: string, userId?: string, participants?: string[]): ConversationFull {
-  const safeTitle = (title ?? '').trim().slice(0, 120) || 'New Conversation';
+export function createConversation(title: string, userId: string, id: string = randomUUID()): Conversation {
+  const safeTitle = title.trim().slice(0, 120) || 'New Conversation';
   const now = new Date().toISOString();
-  const id = randomUUID();
+  const conversationId = id as `${string}-${string}-${string}-${string}-${string}`;
   db.prepare(
-    'INSERT INTO conversations (id, title, created_at, updated_at, user_id, participants) VALUES (?, ?, ?, ?, ?, ?)'
-  ).run(id, safeTitle, now, now, userId || null, participants && participants.length ? JSON.stringify(participants) : null);
-  return { id, title: safeTitle, createdAt: now, updatedAt: now, userId, participants };
+    `INSERT INTO conversations (id, title, created_at, updated_at, user_id)
+     VALUES (?, ?, ?, ?, ?)`
+  ).run(conversationId, safeTitle, now, now, userId);
+  return { id: conversationId, title: safeTitle, createdAt: now, updatedAt: now, userId };
 }
 
-export function ensureConversation(id: string): Conversation {
-  const existing = getConversation(id);
-  if (existing) return existing;
-  const now = new Date().toISOString();
-  db.prepare(
-    'INSERT INTO conversations (id, title, created_at, updated_at) VALUES (?, ?, ?, ?)'
-  ).run(id, 'New Conversation', now, now);
-  return { id, title: 'New Conversation', createdAt: now, updatedAt: now };
+export function ensureConversation(conversationId: string, userId: string): Conversation | null {
+  const existing = getConversation(conversationId);
+  if (existing) return existing.userId === userId ? existing : null;
+  return createConversation(
+    'New Conversation',
+    userId,
+    conversationId as `${string}-${string}-${string}-${string}-${string}`,
+  );
 }
 
-export function getConversations(userId?: string): ConversationFull[] {
-  const rows = (userId
-    ? db.prepare('SELECT * FROM conversations WHERE user_id = ? OR user_id IS NULL ORDER BY updated_at DESC').all(userId)
-    : db.prepare('SELECT * FROM conversations ORDER BY updated_at DESC').all()) as any[];
-  return rows.map(r => ({
-    id: r.id,
-    title: r.title,
-    createdAt: r.created_at,
-    updatedAt: r.updated_at,
-    userId: r.user_id || undefined,
-    participants: r.participants ? JSON.parse(r.participants) : undefined,
-  }));
+export function getConversations(userId: string): Conversation[] {
+  const rows = db.prepare(
+    'SELECT * FROM conversations WHERE user_id = ? ORDER BY updated_at DESC'
+  ).all(userId) as any[];
+  return rows.map(mapConversationRow);
 }
 
-export function getConversation(id: string): Conversation | null {
-  const row = db.prepare('SELECT * FROM conversations WHERE id = ?').get(id) as any;
-  if (!row) return null;
+function mapConversationRow(row: any): Conversation {
   return {
     id: row.id,
     title: row.title,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
+    userId: row.user_id || undefined,
+    participants: row.participants ? JSON.parse(row.participants) : undefined,
   };
 }
 
-export function updateConversationTimestamp(id: string) {
-  db.prepare('UPDATE conversations SET updated_at = ? WHERE id = ?')
-    .run(new Date().toISOString(), id);
+export function getConversation(id: string, userId?: string): Conversation | null {
+  const row = (userId
+    ? db.prepare('SELECT * FROM conversations WHERE id = ? AND user_id = ?').get(id, userId)
+    : db.prepare('SELECT * FROM conversations WHERE id = ?').get(id)) as any;
+  return row ? mapConversationRow(row) : null;
 }
 
-export function deleteConversation(id: string) {
-  db.prepare('DELETE FROM conversations WHERE id = ?').run(id);
+export function updateConversationTimestamp(id: string, userId?: string): boolean {
+  const result = userId
+    ? db.prepare('UPDATE conversations SET updated_at = ? WHERE id = ? AND user_id = ?').run(new Date().toISOString(), id, userId)
+    : db.prepare('UPDATE conversations SET updated_at = ? WHERE id = ?').run(new Date().toISOString(), id);
+  return result.changes > 0;
 }
 
-export function renameConversation(id: string, title: string): boolean {
-  const res = db.prepare('UPDATE conversations SET title = ?, updated_at = ? WHERE id = ?')
-    .run(title.slice(0, 120), new Date().toISOString(), id);
-  return res.changes > 0;
+export function deleteConversation(id: string, userId: string): boolean {
+  return db.prepare('DELETE FROM conversations WHERE id = ? AND user_id = ?').run(id, userId).changes > 0;
 }
 
-export function clearConversations(): number {
-  const row = db.prepare('SELECT COUNT(*) as c FROM conversations').get() as any;
-  db.exec('DELETE FROM messages; DELETE FROM conversations;');
-  return row.c;
+export function renameConversation(id: string, userId: string, title: string): boolean {
+  return db.prepare(
+    'UPDATE conversations SET title = ?, updated_at = ? WHERE id = ? AND user_id = ?'
+  ).run(title.trim().slice(0, 120), new Date().toISOString(), id, userId).changes > 0;
 }
 
-export function setParticipants(id: string, participants: string[]): boolean {
-  const res = db.prepare('UPDATE conversations SET participants = ? WHERE id = ?')
-    .run(participants.length ? JSON.stringify(participants) : null, id);
-  return res.changes > 0;
+export function clearConversations(userId: string): number {
+  const row = db.prepare('SELECT COUNT(*) AS count FROM conversations WHERE user_id = ?').get(userId) as { count: number };
+  db.prepare('DELETE FROM conversations WHERE user_id = ?').run(userId);
+  return row.count;
 }
 
-export function getParticipants(id: string): string[] | null {
-  const row = db.prepare('SELECT participants FROM conversations WHERE id = ?').get(id) as any;
-  if (!row || !row.participants) return null;
+export function setParticipants(id: string, userId: string, participants: string[]): boolean {
+  return db.prepare('UPDATE conversations SET participants = ? WHERE id = ? AND user_id = ?')
+    .run(participants.length ? JSON.stringify(participants) : null, id, userId).changes > 0;
+}
+
+export function getParticipants(id: string, userId?: string): string[] | null {
+  const row = (userId
+    ? db.prepare('SELECT participants FROM conversations WHERE id = ? AND user_id = ?').get(id, userId)
+    : db.prepare('SELECT participants FROM conversations WHERE id = ?').get(id)) as any;
+  if (!row?.participants) return null;
   try { return JSON.parse(row.participants); } catch { return null; }
 }
 
-// ============ Message ops ============
-export function deleteMessageRow(id: string): { ok: boolean; conversationId?: string; role?: string } {
-  const row = db.prepare('SELECT conversation_id, role FROM messages WHERE id = ?').get(id) as any;
+export function deleteMessageRow(id: string, userId: string): { ok: boolean; conversationId?: string; role?: string } {
+  const row = db.prepare(
+    `SELECT m.conversation_id, m.role
+     FROM messages m JOIN conversations c ON c.id = m.conversation_id
+     WHERE m.id = ? AND c.user_id = ?`
+  ).get(id, userId) as any;
   if (!row) return { ok: false };
   db.prepare('DELETE FROM messages WHERE id = ?').run(id);
   return { ok: true, conversationId: row.conversation_id, role: row.role };
 }
 
-// ============ Messages ============
+export function regenerateMessage(
+  messageId: string,
+  userId: string,
+): { ok: boolean; conversationId?: string; userMessageContent?: string; agentId?: string; deletedMessageIds?: string[] } {
+  const transaction = db.transaction(() => {
+    const row = db.prepare(
+      `SELECT m.rowid, m.conversation_id, m.role, m.agent_id
+       FROM messages m JOIN conversations c ON c.id = m.conversation_id
+       WHERE m.id = ? AND c.user_id = ?`
+    ).get(messageId, userId) as { rowid: number; conversation_id: string; role: string; agent_id?: string } | undefined;
+    if (!row || row.role !== 'agent') return { ok: false, conversationId: row?.conversation_id };
+
+    const userMessage = db.prepare(
+      `SELECT content FROM messages
+       WHERE conversation_id = ? AND role = 'user' AND rowid < ?
+       ORDER BY rowid DESC LIMIT 1`
+    ).get(row.conversation_id, row.rowid) as { content?: string } | undefined;
+
+    const deletedMessages = db.prepare(
+      `SELECT id FROM messages WHERE conversation_id = ? AND rowid >= ?`
+    ).all(row.conversation_id, row.rowid) as { id: string }[];
+
+    db.prepare('DELETE FROM messages WHERE conversation_id = ? AND rowid >= ?')
+      .run(row.conversation_id, row.rowid);
+
+    return {
+      ok: true,
+      conversationId: row.conversation_id,
+      userMessageContent: userMessage?.content,
+      agentId: row.agent_id || undefined,
+      deletedMessageIds: deletedMessages.map((m) => m.id),
+    };
+  });
+  return transaction();
+}
+
 export function createMessage(
   conversationId: string,
   role: Message['role'],
@@ -251,14 +285,16 @@ export function createMessage(
   agentId?: string,
   agentName?: string,
   isStreaming = false,
-  id?: string
+  id?: string,
+  createdAt?: string,
 ): Message {
-  const now = new Date().toISOString();
   const messageId = id ?? randomUUID();
+  const timestamp = createdAt || new Date().toISOString();
   db.prepare(
-    `INSERT INTO messages (id, conversation_id, role, content, agent_id, agent_name, created_at, is_streaming)
+    `INSERT INTO messages
+      (id, conversation_id, role, content, agent_id, agent_name, created_at, is_streaming)
      VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
-  ).run(messageId, conversationId, role, content, agentId || null, agentName || null, now, isStreaming ? 1 : 0);
+  ).run(messageId, conversationId, role, content, agentId || null, agentName || null, timestamp, isStreaming ? 1 : 0);
   return {
     id: messageId,
     conversationId,
@@ -266,12 +302,12 @@ export function createMessage(
     content,
     agentId,
     agentName,
-    createdAt: now,
+    createdAt: timestamp,
     isStreaming,
   };
 }
 
-export function updateMessageContent(id: string, content: string, isStreaming = false) {
+export function updateMessageContent(id: string, content: string, isStreaming = false): void {
   db.prepare('UPDATE messages SET content = ?, is_streaming = ? WHERE id = ?')
     .run(content, isStreaming ? 1 : 0, id);
 }
@@ -287,47 +323,147 @@ interface MessageRow {
   is_streaming: number;
 }
 
-function mapMessageRow(r: MessageRow): Message {
-  return {
-    id: r.id,
-    conversationId: r.conversation_id,
-    role: r.role as Message['role'],
-    content: r.content,
-    agentId: r.agent_id || undefined,
-    agentName: r.agent_name || undefined,
-    createdAt: r.created_at,
-    isStreaming: Boolean(r.is_streaming),
-  };
-}
-
-export function getMessages(conversationId: string): Message[] {
-  const rows = db.prepare('SELECT * FROM messages WHERE conversation_id = ? ORDER BY created_at ASC')
-    .all(conversationId) as MessageRow[];
-  return rows.map(mapMessageRow);
-}
-
-/** Newest-first page of a conversation, bounded to `limit` rows; returned oldest-first. */
-export function getMessagePage(conversationId: string, limit = 100, beforeCreatedAt?: string): Message[] {
-  const capped = Math.min(Math.max(limit, 1), 500);
-  const rows: MessageRow[] = beforeCreatedAt
-    ? db.prepare('SELECT * FROM messages WHERE conversation_id = ? AND created_at < ? ORDER BY created_at DESC LIMIT ?')
-        .all(conversationId, beforeCreatedAt, capped) as MessageRow[]
-    : db.prepare('SELECT * FROM messages WHERE conversation_id = ? ORDER BY created_at DESC LIMIT ?')
-        .all(conversationId, capped) as MessageRow[];
-  return rows.map(mapMessageRow).reverse();
-}
-
-export function getMessage(id: string): Message | null {
-  const row = db.prepare('SELECT * FROM messages WHERE id = ?').get(id) as any;
-  if (!row) return null;
+function mapMessageRow(row: MessageRow): Message {
   return {
     id: row.id,
     conversationId: row.conversation_id,
-    role: row.role,
+    role: row.role as Message['role'],
     content: row.content,
     agentId: row.agent_id || undefined,
     agentName: row.agent_name || undefined,
     createdAt: row.created_at,
     isStreaming: Boolean(row.is_streaming),
   };
+}
+
+export function getMessages(conversationId: string, userId?: string): Message[] {
+  const rows = (userId
+    ? db.prepare(
+      `SELECT m.* FROM messages m JOIN conversations c ON c.id = m.conversation_id
+       WHERE m.conversation_id = ? AND c.user_id = ? ORDER BY m.rowid ASC`
+    ).all(conversationId, userId)
+    : db.prepare('SELECT * FROM messages WHERE conversation_id = ? ORDER BY rowid ASC').all(conversationId)) as MessageRow[];
+  return rows.map(mapMessageRow);
+}
+
+export function getMessagePage(
+  conversationId: string,
+  userId: string,
+  limit = 100,
+  beforeId?: string,
+): { messages: Message[]; hasMore: boolean } {
+  const capped = Math.min(Math.max(limit, 1), 500);
+  const owner = db.prepare('SELECT id FROM conversations WHERE id = ? AND user_id = ?').get(conversationId, userId);
+  if (!owner) return { messages: [], hasMore: false };
+
+  const beforeRow = beforeId
+    ? db.prepare('SELECT rowid FROM messages WHERE id = ? AND conversation_id = ?').get(beforeId, conversationId) as { rowid: number } | undefined
+    : undefined;
+  if (beforeId && !beforeRow) return { messages: [], hasMore: false };
+  const boundary = beforeRow?.rowid;
+  const rows = (boundary === undefined
+    ? db.prepare('SELECT * FROM messages WHERE conversation_id = ? ORDER BY rowid DESC LIMIT ?').all(conversationId, capped + 1)
+    : db.prepare('SELECT * FROM messages WHERE conversation_id = ? AND rowid < ? ORDER BY rowid DESC LIMIT ?').all(conversationId, boundary, capped + 1)) as MessageRow[];
+  const hasMore = rows.length > capped;
+  return { messages: rows.slice(0, capped).reverse().map(mapMessageRow), hasMore };
+}
+
+export function getMessage(id: string, userId?: string): Message | null {
+  const row = (userId
+    ? db.prepare(
+      `SELECT m.* FROM messages m JOIN conversations c ON c.id = m.conversation_id
+       WHERE m.id = ? AND c.user_id = ?`
+    ).get(id, userId)
+    : db.prepare('SELECT * FROM messages WHERE id = ?').get(id)) as MessageRow | undefined;
+  return row ? mapMessageRow(row) : null;
+}
+
+export interface ExportData {
+  conversations: Conversation[];
+  messages: Message[];
+  personas: PersonaRow[];
+}
+
+export function exportAllData(userId: string): ExportData {
+  const conversations = getConversations(userId);
+  const messages = conversations.flatMap((conversation) => getMessages(conversation.id, userId));
+  return { conversations, messages, personas: getPersonas(userId) };
+}
+
+export function importAllData(
+  data: unknown,
+  userId: string,
+): { ok: boolean; error?: string; stats?: { conversations: number; messages: number; personas: number } } {
+  if (!data || typeof data !== 'object' || Array.isArray(data)) {
+    return { ok: false, error: 'Invalid import format: expected an object' };
+  }
+  const raw = data as Record<string, unknown>;
+  if (raw.conversations !== undefined && !Array.isArray(raw.conversations)) return { ok: false, error: 'Invalid format: "conversations" must be an array' };
+  if (raw.messages !== undefined && !Array.isArray(raw.messages)) return { ok: false, error: 'Invalid format: "messages" must be an array' };
+  if (raw.personas !== undefined && !Array.isArray(raw.personas)) return { ok: false, error: 'Invalid format: "personas" must be an array' };
+
+  const importedConversations = (raw.conversations || []) as any[];
+  const importedMessages = (raw.messages || []) as any[];
+  const importedPersonas = (raw.personas || []) as any[];
+  if (importedConversations.length === 0 && importedMessages.length === 0 && importedPersonas.length === 0) {
+    return { ok: false, error: 'Nothing to import — file contains no conversations, messages, or personas' };
+  }
+
+  try {
+    const conversationIds = new Map<string, string>();
+    const transaction = db.transaction(() => {
+      for (const conversation of importedConversations) {
+        if (!conversation || typeof conversation.id !== 'string' || typeof conversation.title !== 'string') {
+          throw new Error('Invalid conversation record');
+        }
+
+        const existing = getConversation(conversation.id, userId);
+        if (existing) {
+          conversationIds.set(conversation.id, existing.id);
+          renameConversation(existing.id, userId, conversation.title);
+          continue;
+        }
+
+        // Imported IDs are not globally unique across profiles. If another
+        // user already owns this ID, remap the imported graph instead of
+        // allowing a UNIQUE constraint error or overwriting their data.
+        const importedId = getConversation(conversation.id) ? randomUUID() : conversation.id;
+        conversationIds.set(conversation.id, importedId);
+        createConversation(conversation.title, userId, importedId);
+      }
+
+      for (const message of importedMessages) {
+        if (!message || typeof message.id !== 'string' || typeof message.conversationId !== 'string') {
+          throw new Error('Invalid message record');
+        }
+        const conversationId = conversationIds.get(message.conversationId) || message.conversationId;
+        const owner = getConversation(conversationId, userId);
+        if (!owner) continue;
+
+        const existing = getMessage(message.id, userId);
+        if (existing) continue;
+        const messageId = getMessage(message.id) ? randomUUID() : message.id;
+        createMessage(conversationId, message.role, String(message.content || ''), message.agentId, message.agentName, Boolean(message.isStreaming), messageId, message.createdAt);
+      }
+
+      for (const persona of importedPersonas) {
+        if (!persona || typeof persona.id !== 'string' || typeof persona.name !== 'string') {
+          throw new Error('Invalid persona record');
+        }
+        const existing = getPersona(persona.id, userId);
+        if (existing) {
+          updatePersonaRow(persona.id, userId, persona);
+          continue;
+        }
+        const personaId = getPersonas().some((candidate) => candidate.id === persona.id)
+          ? randomUUID()
+          : persona.id;
+        createPersonaRow({ ...persona, id: personaId, enabled: persona.enabled !== false, enabledTools: Boolean(persona.enabledTools) }, userId);
+      }
+    });
+    transaction();
+    return { ok: true, stats: { conversations: importedConversations.length, messages: importedMessages.length, personas: importedPersonas.length } };
+  } catch (error) {
+    return { ok: false, error: error instanceof Error ? error.message : 'Import failed' };
+  }
 }

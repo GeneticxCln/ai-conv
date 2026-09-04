@@ -1,346 +1,798 @@
 import { Server, Socket } from 'socket.io';
-import { AgentRegistry, DefaultAgent } from '../agents';
-import { createConversation, ensureConversation, getConversation, getMessages, getMessagePage, getConversations, updateConversationTimestamp, createMessage, createPersonaRow, updatePersonaRow, deletePersonaRow, renameConversation as dbRenameConversation, clearConversations as dbClearConversations, deleteConversation as dbDeleteConversation, createUser, getUsers, deleteUserRow, setParticipants, getParticipants, deleteMessageRow, getMessage } from '../storage/db';
-import { UserMessagePayloadSchema, ConversationImportSchema } from '../types';
 import { randomUUID } from 'crypto';
-import { ollama, abortStreamsForConversation } from '../llm/ollama';
-import { verifyToken, getUserFromToken } from '../auth';
-// Simple in-memory rate limiter for model:pull
-const pullRateLimiter = new Map<string, number[]>();
-const PULL_RATE_LIMIT_WINDOW = 60000; // 1 minute
-const PULL_RATE_LIMIT_MAX = 3; // max 3 pulls per minute per socket
+import {
+  AgentRegistry,
+  DefaultAgent,
+  ToolEnabledDefaultAgent,
+} from '../agents/index.js';
+import {
+  createConversation,
+  ensureConversation,
+  getConversation,
+  getMessages,
+  getMessagePage,
+  getConversations,
+  updateConversationTimestamp,
+  createMessage,
+  createPersonaRow,
+  updatePersonaRow,
+  deletePersonaRow,
+  renameConversation as dbRenameConversation,
+  clearConversations as dbClearConversations,
+  deleteConversation as dbDeleteConversation,
+  getUsers,
+  getUser,
+  deleteUserRow,
+  setParticipants,
+  getParticipants,
+  deleteMessageRow,
+  getMessage,
+  exportAllData,
+  importAllData,
+  regenerateMessage,
+  getPersonas,
+  PersonaRow,
+  UserRow,
+} from '../storage/db.js';
+import { ConversationImportSchema, UserMessagePayloadSchema } from '@ai-conv/types';
+import { ollama, abortStreamsForConversation, validateModel } from '../llm/ollama.js';
+import { createToken, createUserWithToken, getUserFromToken, verifyToken } from '../auth.js';
+import {
+  checkPullRateLimit,
+  cleanupRateLimit,
+  checkMessageRateLimit,
+  checkCreateRateLimit,
+} from '../redis/rateLimiter.js';
 
-function checkPullRateLimit(socketId: string): boolean {
-  const now = Date.now();
-  const timestamps = pullRateLimiter.get(socketId) || [];
-  const recent = timestamps.filter(ts => now - ts < PULL_RATE_LIMIT_WINDOW);
-  if (recent.length >= PULL_RATE_LIMIT_MAX) return false;
-  recent.push(now);
-  pullRateLimiter.set(socketId, recent);
-  return true;
+type Ack<T = any> = (value: T) => void;
+type SocketUser = UserRow;
+
+declare module 'socket.io' {
+  interface Socket {
+    user?: SocketUser;
+  }
 }
 
-// ============ Socket Handler ============
+const userRoom = (userId: string) => `user:${userId}`;
+
+function publicUser(user: UserRow) {
+  return {
+    id: user.id,
+    name: user.name,
+    avatar: user.avatar,
+    createdAt: user.created_at,
+  };
+}
+
+function emitAuthError(socket: Socket, ack?: Ack, error = 'Authentication required'): null {
+  ack?.({ ok: false, error });
+  const event = error === 'Authentication required' ? 'auth:error' : 'authorization:error';
+  socket.emit(event, { error });
+  if (error === 'Authentication required') {
+    socket.emit('agent:error', { conversationId: '', agentId: '', agentName: 'System', error });
+  }
+  return null;
+}
+
+function requireUser(socket: Socket, ack?: Ack): SocketUser | null {
+  return socket.user || emitAuthError(socket, ack);
+}
+
+function emitConversationList(io: Server, userId: string) {
+  io.to(userRoom(userId)).emit('conversation:list', getConversations(userId));
+}
+
+function syncUserPersonas(registry: AgentRegistry, userId: string): void {
+  for (const persona of getPersonas(userId)) {
+    const existing = registry.getPersona(persona.id, userId);
+    const AgentClass = persona.enabledTools ? ToolEnabledDefaultAgent : DefaultAgent;
+    if (!existing) {
+      registry.register(persona, AgentClass);
+    } else {
+      registry.updatePersona(persona.id, userId, persona);
+    }
+  }
+}
+
 export function setupSocketHandler(io: Server, registry: AgentRegistry) {
+  // Bootstrap connections may create their first local profile. Every other
+  // event is guarded below, and authenticated connections are bound here.
   io.use((socket, next) => {
     const token = socket.handshake.auth?.token || socket.handshake.query?.token;
-    if (!token) return next(new Error('Authentication required'));
-    const payload = verifyToken(token);
+    if (!token) return next();
+
+    const payload = verifyToken(String(token));
     if (!payload) return next(new Error('Invalid token'));
-    const user = getUserFromToken(token);
+    const user = getUserFromToken(String(token));
     if (!user) return next(new Error('User not found'));
-    (socket as any).user = user;
+
+    socket.user = user;
+    socket.data.authToken = String(token);
     next();
   });
 
   io.on('connection', (socket: Socket) => {
+    if (socket.user) {
+      socket.join(userRoom(socket.user.id));
+      syncUserPersonas(registry, socket.user.id);
+      socket.emit('user:current', publicUser(socket.user));
+      socket.emit('users:list', getUsers().map(publicUser));
+      socket.emit('personas:list', registry.getAllPersonas(socket.user.id));
+      socket.emit('conversation:list', getConversations(socket.user.id));
+    }
     console.log(`Client connected: ${socket.id}`);
 
-    // Join conversation room; history is served in bounded pages.
-    socket.on('join', (conversationId: string) => {
-      socket.join(conversationId);
-      console.log(`Socket ${socket.id} joined conversation ${conversationId}`);
-      socket.emit('messages:history', { conversationId, messages: getMessagePage(conversationId, 100) });
+    socket.on('join', (conversationId: string, ack?: Ack) => {
+      const user = requireUser(socket, ack);
+      if (!user) return;
+      const id = String(conversationId);
+      if (!getConversation(id, user.id)) {
+        emitAuthError(socket, ack, 'Conversation not found');
+        return;
+      }
+      socket.join(id);
+      const page = getMessagePage(id, user.id, 100);
+      socket.emit('messages:history', { conversationId: id, ...page });
+      ack?.({ ok: true, ...page });
     });
 
-    // Older messages, newest-first internally; client prepends the returned page.
-    socket.on('messages:older', ({ conversationId, before }: { conversationId: string; before?: string }, ack?: (page: unknown) => void) => {
-      const page = getMessagePage(String(conversationId), 100, before ? String(before) : undefined);
-      if (typeof ack === 'function') ack(page); else socket.emit('messages:older', page);
+    socket.on('messages:older',
+      (
+        payload: { conversationId: string; before?: string },
+        ack?: Ack,
+      ) => {
+        const user = requireUser(socket, ack);
+        if (!user) return;
+        const conversationId = String(payload?.conversationId || '');
+        if (!getConversation(conversationId, user.id)) {
+          emitAuthError(socket, ack, 'Conversation not found');
+          return;
+        }
+        const page = getMessagePage(
+          conversationId,
+          user.id,
+          100,
+          payload?.before ? String(payload.before) : undefined,
+        );
+        socket.emit('messages:older', { conversationId, ...page });
+        ack?.({ ok: true, conversationId, ...page });
+      },
+    );
+
+    socket.on('leave', (conversationId: string, ack?: Ack) => {
+      const user = requireUser(socket, ack);
+      if (!user) return;
+      if (!getConversation(String(conversationId), user.id)) {
+        emitAuthError(socket, ack, 'Conversation not found');
+        return;
+      }
+      socket.leave(String(conversationId));
+      ack?.({ ok: true });
     });
 
-    socket.on('leave', (conversationId: string) => {
-      socket.leave(conversationId);
+    socket.on('session:current', (ack?: Ack) => {
+      const user = requireUser(socket, ack);
+      if (!user) return;
+      const current = publicUser(user);
+      socket.emit('user:current', current);
+      ack?.(current);
     });
 
-    // ===== Users (lightweight local profiles) =====
-    socket.on('users:list', (ack?: (users: unknown[]) => void) => {
-      const users = getUsers();
-      if (typeof ack === 'function') ack(users); else socket.emit('users:list', users);
+    socket.on('users:list', (ack?: Ack) => {
+      const user = requireUser(socket, ack);
+      if (!user) return;
+      ack?.(getUsers().map(publicUser));
     });
 
-    socket.on('user:create', ({ name, avatar }: { name: string; avatar?: string }, ack?: (u: unknown) => void) => {
-      const user = createUser(String(name || 'User').trim() || 'User', avatar ? String(avatar).slice(0, 4) : undefined);
-      io.emit('users:list', getUsers());
-      if (typeof ack === 'function') ack(user);
-    });
+    socket.on(
+      'user:create',
+      async (
+        data: { name?: string; avatar?: string },
+        ack?: Ack,
+      ) => {
+        // Anonymous profile creation is a one-time bootstrap operation.
+        // Once a profile exists, callers must already hold a valid token;
+        // authenticated users may still create another local profile.
+        if (!socket.user && getUsers().length > 0) {
+          emitAuthError(socket, ack, 'Authentication required to create another profile');
+          return;
+        }
+        if (!(await checkCreateRateLimit(socket.id))) {
+          ack?.({ ok: false, error: 'Rate limit exceeded' });
+          return;
+        }
 
-    socket.on('user:delete', (id: string) => {
-      deleteUserRow(String(id));
-      io.emit('users:list', getUsers());
-    });
+        const { user, token } = createUserWithToken(
+          String(data?.name || 'User').trim() || 'User',
+          data?.avatar ? String(data.avatar).slice(0, 4) : undefined,
+        );
+        for (const room of socket.rooms) {
+          if (room !== socket.id) socket.leave(room);
+        }
+        socket.user = user;
+        socket.data.authToken = token;
+        socket.join(userRoom(user.id));
+        syncUserPersonas(registry, user.id);
+        socket.emit('user:current', publicUser(user));
+        socket.emit('users:list', getUsers().map(publicUser));
+        socket.emit('personas:list', registry.getAllPersonas(user.id));
+        socket.emit('conversation:list', getConversations(user.id));
+        ack?.({ ok: true, user: publicUser(user), token });
+      },
+    );
 
-    // Per-conversation participants (empty/null = all enabled personas)
-    socket.on('participants:set', ({ conversationId, personaIds }: { conversationId: string; personaIds: string[] }) => {
-      setParticipants(String(conversationId), Array.isArray(personaIds) ? personaIds.map(String) : []);
-      io.emit('conversation:list', getConversations());
-    });
-
-    // Handle user message
-    socket.on('user:message', async (payload: unknown) => {
-      const parsed = UserMessagePayloadSchema.safeParse(payload);
-      if (!parsed.success) {
-        socket.emit('error', { message: 'Invalid payload', errors: parsed.error.format() });
+    // Local profile switching is explicit: the server issues a fresh token
+    // for the selected profile and immediately binds the socket to that user.
+    socket.on('user:select', (id: string, ack?: Ack) => {
+      const current = requireUser(socket, ack);
+      if (!current) return;
+      const selected = getUser(String(id));
+      if (!selected) {
+        emitAuthError(socket, ack, 'User not found');
         return;
       }
 
-      const { conversationId, content, tempId } = parsed.data;
+      for (const room of socket.rooms) {
+        if (room !== socket.id) socket.leave(room);
+      }
+      socket.user = selected;
+      const token = createToken({ userId: selected.id, username: selected.name });
+      socket.data.authToken = token;
+      socket.join(userRoom(selected.id));
+      syncUserPersonas(registry, selected.id);
+      socket.emit('user:current', publicUser(selected));
+      socket.emit('users:list', getUsers().map(publicUser));
+      socket.emit('personas:list', registry.getAllPersonas(selected.id));
+      socket.emit('conversation:list', getConversations(selected.id));
+      ack?.({ ok: true, user: publicUser(selected), token });
+    });
 
+    socket.on('user:delete', (id: string, ack?: Ack) => {
+      const user = requireUser(socket, ack);
+      if (!user) return;
+      const targetId = String(id);
+      const targetUser = getUser(targetId);
+      if (!targetUser) {
+        ack?.({ ok: false, error: 'User not found' });
+        return;
+      }
+      // Unregister all personas belonging to this user from in-memory registry
+      const userPersonas = getPersonas(targetId);
+      for (const p of userPersonas) {
+        registry.unregister(p.id);
+      }
+      const deleted = deleteUserRow(targetId);
+      if (deleted && targetId === user.id) {
+        for (const room of socket.rooms) {
+          if (room !== socket.id) socket.leave(room);
+        }
+        socket.user = undefined;
+        socket.data.authToken = undefined;
+      }
+      io.emit('users:list', getUsers().map(publicUser));
+      ack?.({ ok: deleted });
+    });
+
+    socket.on(
+      'participants:set',
+      ({ conversationId, personaIds }: { conversationId: string; personaIds: string[] }, ack?: Ack) => {
+        const user = requireUser(socket, ack);
+        if (!user) return;
+        if (!getConversation(String(conversationId), user.id)) {
+          emitAuthError(socket, ack, 'Conversation not found');
+          return;
+        }
+        const requestedParticipants = Array.isArray(personaIds) ? personaIds.map(String) : [];
+        const ownedPersonaIds = new Set(getPersonas(user.id).map((persona) => persona.id));
+        if (requestedParticipants.some((personaId) => !ownedPersonaIds.has(personaId))) {
+          ack?.({ ok: false, error: 'Participants must belong to the active profile' });
+          return;
+        }
+        const ok = setParticipants(String(conversationId), user.id, requestedParticipants);
+        ack?.({ ok });
+      },
+    );
+
+    socket.on('user:message', async (payload: unknown) => {
       try {
-        // Ensure conversation exists with this exact id
-        ensureConversation(conversationId);
-
-        // Auto-title: first user message names the conversation
-        const conv = getConversation(conversationId);
-        if (conv && conv.title === 'New Conversation') {
-          dbRenameConversation(conversationId, content.slice(0, 60));
-          io.emit('conversation:list', getConversations());
+        const user = requireUser(socket);
+        if (!user) return;
+        const parsed = UserMessagePayloadSchema.safeParse(payload);
+        if (!parsed.success) {
+          socket.emit('validation:error', { error: 'Invalid payload' });
+          return;
         }
 
-        // Save user message and echo it so every client (including the
-        // sender) renders it immediately without a rejoin.
-        // Preserve client's tempId for reliable dedupe.
-        const userMessage = createMessage(conversationId, 'user', content, undefined, undefined, false, tempId);
-        io.emit('message:user', userMessage);
-        updateConversationTimestamp(conversationId);
-
-        // Get history for context
-        const history = getMessages(conversationId);
-
-        // @mention targeting: "@Name message" replies only from that persona
-        const mentionMatch = content.match(/^@([\w\s.-]{1,40}?)\s+/);
-        let targets = registry.getEnabled();
-        if (mentionMatch) {
-          const wanted = mentionMatch[1].trim().toLowerCase();
-          const matched = targets.filter(a => a.name.toLowerCase().includes(wanted));
-          if (matched.length > 0) targets = matched;
+        const { conversationId, content, agentChat } = parsed.data;
+        if (!(await checkMessageRateLimit(conversationId))) {
+          socket.emit('agent:error', {
+            conversationId,
+            agentId: '',
+            agentName: 'System',
+            error: 'Rate limit exceeded — please wait before sending another message',
+          });
+          return;
         }
 
-        // Per-conversation participant filter (empty = everyone)
-        const participants = getParticipants(conversationId);
-        if (!mentionMatch && participants && participants.length > 0) {
-          targets = targets.filter(a => participants.includes(a.id));
+        const conversation = ensureConversation(conversationId, user.id);
+        if (!conversation) {
+          socket.emit('agent:error', {
+            conversationId,
+            agentId: '',
+            agentName: 'System',
+            error: 'This conversation belongs to another user',
+          });
+          return;
+        }
+        socket.join(conversationId);
+
+        const history = getMessages(conversationId, user.id);
+        if (conversation.title === 'New Conversation') {
+          dbRenameConversation(conversationId, user.id, content.slice(0, 60));
+        }
+        updateConversationTimestamp(conversationId, user.id);
+
+        const userMessage = createMessage(
+          conversationId,
+          'user',
+          content,
+          undefined,
+          undefined,
+          false,
+          parsed.data.tempId,
+        );
+        io.to(conversationId).emit('message:created', userMessage);
+        emitConversationList(io, user.id);
+
+        let targetAgents = registry.getEnabled(user.id);
+        const participants = getParticipants(conversationId, user.id);
+        if (participants?.length) {
+          targetAgents = targetAgents.filter((agent) => participants.includes(agent.id));
         }
 
-        // Trigger target agents in parallel
-        const promises = targets.map(agent =>
-          agent.handleUserMessage(conversationId, content, history).catch((err: Error) => {
-            console.error(`Agent ${agent.name} error:`, err);
-          })
+        let agentContent = content;
+        const trimmed = content.trim();
+        if (trimmed.startsWith('@')) {
+          // Sort persona names by length descending to match multi-word names first
+          const sortedAgents = [...targetAgents].sort((a, b) => b.name.length - a.name.length);
+          for (const candidate of sortedAgents) {
+            const prefix = `@${candidate.name}`;
+            if (trimmed.toLowerCase().startsWith(prefix.toLowerCase())) {
+              const rest = trimmed.slice(prefix.length).trim();
+              if (rest.length > 0) {
+                targetAgents = [candidate];
+                agentContent = rest;
+                break;
+              }
+            }
+          }
+        }
+
+        if (targetAgents.length === 0) {
+          socket.emit('agent:error', {
+            conversationId,
+            agentId: '',
+            agentName: 'System',
+            error: 'No enabled personas',
+          });
+          return;
+        }
+
+        const generations = targetAgents.map((agent) =>
+          agent.handleUserMessage(conversationId, agentContent, history).catch((error: unknown) => {
+            console.error(`Agent ${agent.name} error:`, error);
+          }),
         );
 
-        // Agent-to-agent: one extra round where personas react to each other
-        if (parsed.data.agentChat) {
-          Promise.allSettled(promises).then(() => {
-            const history2 = getMessages(conversationId);
-            for (const agent of registry.getEnabled()) {
-              agent.handleContinue(conversationId, history2).catch((err: Error) => {
-                console.error(`Agent ${agent.name} continue error:`, err);
+        if (agentChat) {
+          void Promise.allSettled(generations).then(() => {
+            const continuationHistory = getMessages(conversationId, user.id);
+            let contAgents = registry.getEnabled(user.id);
+            const currentParticipants = getParticipants(conversationId, user.id);
+            if (currentParticipants?.length) {
+              contAgents = contAgents.filter((agent) => currentParticipants.includes(agent.id));
+            }
+            for (const agent of contAgents) {
+              void agent.handleContinue(conversationId, continuationHistory).catch((error: unknown) => {
+                console.error(`Agent ${agent.name} continuation error:`, error);
               });
             }
           });
         }
-      } catch (error) {
-        console.error('Error handling user message:', error);
-        socket.emit('error', { message: 'Failed to process message' });
+      } catch (err) {
+        let convId = '';
+        if (payload && typeof payload === 'object' && 'conversationId' in payload) {
+          const candidate = (payload as Record<string, unknown>).conversationId;
+          if (typeof candidate === 'string') convId = candidate;
+        }
+        socket.emit('agent:error', {
+          conversationId: convId,
+          agentId: '',
+          agentName: 'System',
+          error: err instanceof Error ? err.message : 'Internal error processing message',
+        });
       }
     });
 
-    // Stop all generations in a conversation
-    socket.on('generation:stop', (conversationId: string) => {
-      const n = abortStreamsForConversation(String(conversationId));
-      console.log(`Stopped ${n} stream(s) in ${conversationId}`);
-    });
-
-    // ===== Message ops =====
-    socket.on('message:delete', (id: string) => {
-      const res = deleteMessageRow(String(id));
-      if (res.ok && res.conversationId) {
-        io.to(res.conversationId).emit('message:deleted', { conversationId: res.conversationId, id });
-      }
-    });
-
-    // Regenerate the last agent reply for its persona
-    socket.on('message:regenerate', async (id: string) => {
-      const msg = getMessage(String(id));
-      if (!msg || msg.role !== 'agent' || !msg.agentId) return;
-      const history = getMessages(msg.conversationId);
-      const idx = history.findIndex(m => m.id === msg.id);
-      if (idx === -1 || idx !== history.length - 1) return; // only last message
-      deleteMessageRow(msg.id);
-      io.to(msg.conversationId).emit('message:deleted', { conversationId: msg.conversationId, id: msg.id });
-      const agent = registry.get(msg.agentId);
-      const historyBefore = getMessages(msg.conversationId);
-      if (agent) {
-        await agent.handleContinue(msg.conversationId, historyBefore).catch((err: Error) =>
-          console.error(`Regenerate failed for ${agent.name}:`, err)
-        );
-      }
-    });
-
-    // ===== Import conversation (from exported JSON) =====
-    socket.on('conversation:import', (data: unknown, ack?: (c: unknown) => void) => {
-      const parsed = ConversationImportSchema.safeParse(data);
-      if (!parsed.success) {
-        if (typeof ack === 'function') ack(null);
+    socket.on('generation:stop', (conversationId: string, ack?: Ack) => {
+      const user = requireUser(socket, ack);
+      if (!user) return;
+      if (!getConversation(String(conversationId), user.id)) {
+        emitAuthError(socket, ack, 'Conversation not found');
         return;
       }
-      try {
-        const conv = createConversation(String(parsed.data.title || 'Imported').slice(0, 120));
-        for (const m of parsed.data.messages) {
-          const role = m.role === 'user' ? 'user' : m.role === 'agent' ? 'agent' : 'system';
-          createMessage(conv.id, role as 'user' | 'agent' | 'system', m.content, undefined, m.agentName);
-        }
-        io.emit('conversation:list', getConversations());
-        if (typeof ack === 'function') ack(conv);
-      } catch (err) {
-        console.error('conversation:import failed', err);
-        if (typeof ack === 'function') ack(null);
-      }
+      abortStreamsForConversation(String(conversationId));
+      io.to(String(conversationId)).emit('generation:stopped', String(conversationId));
+      ack?.({ ok: true });
     });
 
-    // ===== Persona management (user-created, stored in DB) =====
-    const broadcastPersonas = () => {
-      io.emit('personas:list', registry.getAllPersonas());
-    };
-
-    socket.on('personas:list', () => {
-      socket.emit('personas:list', registry.getAllPersonas());
-    });
-
-    // ===== Installed Ollama models =====
-    socket.on('models:list', async (ack?: (models: string[]) => void) => {
-      try {
-        const { models } = await ollama.list();
-        const names = models.map(m => m.name);
-        if (typeof ack === 'function') ack(names);
-        else socket.emit('models:list', names);
-      } catch (err) {
-        console.error('models:list failed', err);
-        if (typeof ack === 'function') ack([]);
-      }
-    });
-
-    // ===== Pull a model (with progress broadcast) =====
-    socket.on('model:pull', async (modelName: string) => {
-      // Rate limit per socket
-      if (!checkPullRateLimit(socket.id)) {
-        socket.emit('error', { message: 'Rate limit exceeded: max 3 model pulls per minute' });
+    socket.on('message:regenerate', async (messageId: string, ack?: Ack) => {
+      const user = requireUser(socket, ack);
+      if (!user) return;
+      const targetMessage = getMessage(String(messageId), user.id);
+      if (!targetMessage?.conversationId) {
+        ack?.({ ok: false, error: 'Message not found' });
         return;
       }
-      const name = String(modelName || '').trim();
-      console.log(`Pulling model: ${name}`);
-      try {
-        const stream = await ollama.pull({ model: name, stream: true });
-        for await (const progress of stream) {
-          io.emit('model:pull:progress', {
-            model: name,
-            status: progress.status || 'downloading',
-            percent: progress.total ? Math.round(((progress.completed || 0) / progress.total) * 100) : null,
-          });
-        }
-        io.emit('model:pull:progress', { model: name, status: 'done', percent: 100 });
-        console.log(`Model pulled: ${name}`);
-      } catch (err) {
-        console.error(`model:pull failed for ${name}`, err);
-        io.emit('model:pull:progress', { model: name, status: 'error', percent: null });
-      }
-    });
 
-    socket.on('persona:create', async (data: any) => {
-      try {
-        const id = randomUUID();
-        let model = 'llama3.1:8b';
-        if (typeof data.model === 'string' && data.model.trim()) {
-          model = data.model.trim().slice(0, 120);
-        } else {
-          try {
-            const { models } = await ollama.list();
-            if (models.length > 0) model = models[0].name;
-          } catch {
-            // fall back to default model
+      const now = Date.now();
+      const lastRegen = socket.data.lastRegenAt as number | undefined;
+      if (lastRegen && now - lastRegen < 3000) {
+        ack?.({ ok: false, error: 'Please wait before regenerating again' });
+        return;
+      }
+      socket.data.lastRegenAt = now;
+
+      const conversationId = targetMessage.conversationId;
+      abortStreamsForConversation(conversationId);
+      const result = regenerateMessage(String(messageId), user.id);
+      if (!result.ok || !result.conversationId || !result.userMessageContent) {
+        ack?.({ ok: false, error: 'Cannot regenerate this message' });
+        return;
+      }
+
+      socket.join(conversationId);
+      // Emit deletion for all messages removed by regeneration
+      for (const deletedId of result.deletedMessageIds ?? [messageId]) {
+        io.to(conversationId).emit('message:deleted', { conversationId, id: deletedId });
+      }
+      const history = getMessages(conversationId, user.id);
+      updateConversationTimestamp(conversationId, user.id);
+      let agents = registry.getEnabled(user.id);
+      const participants = getParticipants(conversationId, user.id);
+      if (participants?.length) agents = agents.filter((agent) => participants.includes(agent.id));
+
+      // If regenerating a specific agent message, only re-run that specific agent
+      if (result.agentId) {
+        const specificAgent = agents.find((a) => a.id === result.agentId);
+        if (specificAgent) {
+          agents = [specificAgent];
+        }
+      }
+
+      let agentContent = result.userMessageContent ?? '';
+      const trimmed = agentContent.trim();
+      if (trimmed.startsWith('@')) {
+        const sortedAgents = [...agents].sort((a, b) => b.name.length - a.name.length);
+        for (const candidate of sortedAgents) {
+          const prefix = `@${candidate.name}`;
+          if (trimmed.toLowerCase().startsWith(prefix.toLowerCase())) {
+            const rest = trimmed.slice(prefix.length).trim();
+            if (rest.length > 0) {
+              agents = [candidate];
+              agentContent = rest;
+              break;
+            }
           }
         }
+      }
+
+      for (const agent of agents) {
+        void agent.handleUserMessage(conversationId, agentContent, history);
+      }
+      ack?.({ ok: true });
+    });
+
+    socket.on('models:list', async (ack?: Ack<string[]>) => {
+      if (!requireUser(socket, ack)) return;
+      try {
+        const { models } = await ollama.list();
+        ack?.(models.map((model) => model.name));
+      } catch {
+        ack?.([]);
+      }
+    });
+
+    // Full model metadata (name + size + parameter size). Used by the E2E
+    // global-setup to pick the fastest installed chat model; the app UI only
+    // needs names, so this stays a separate event to avoid changing
+    // models:list's string[] contract.
+    socket.on(
+      'models:list:full',
+      async (ack?: Ack<Array<{ name: string; size: number; parameterSize?: string; capabilities?: string[] }>>) => {
+        if (!requireUser(socket, ack)) return;
+        try {
+          const { models } = await ollama.list();
+          ack?.(models.map((model) => ({
+            name: model.name,
+            size: model.size,
+            parameterSize: (model.details as { parameter_size?: string } | undefined)?.parameter_size,
+            capabilities: (model as { capabilities?: string[] }).capabilities,
+          })));
+        } catch {
+          ack?.([]);
+        }
+      },
+    );
+
+    socket.on('model:pull', (modelName: string, ack?: Ack) => {
+      if (!requireUser(socket, ack)) return;
+      checkPullRateLimit(socket.id, modelName).then((allowed) => {
+        if (!allowed) {
+          socket.emit('model:pull:progress', { model: modelName, status: 'rate_limited', percent: null });
+          return;
+        }
+        void pullModel(socket, modelName);
+      });
+    });
+
+    async function pullModel(currentSocket: Socket, modelName: string) {
+      try {
+        currentSocket.emit('model:pull:progress', { model: modelName, status: 'pulling', percent: 0 });
+        const stream = await ollama.pull({ model: modelName, stream: true });
+        for await (const chunk of stream) {
+          if (chunk.status === 'pulling' && chunk.completed && chunk.total) {
+            currentSocket.emit('model:pull:progress', {
+              model: modelName,
+              status: 'pulling',
+              percent: Math.round((chunk.completed / chunk.total) * 100),
+            });
+          } else if (chunk.status === 'success') {
+            currentSocket.emit('model:pull:progress', { model: modelName, status: 'done', percent: 100 });
+          }
+        }
+      } catch (error) {
+        currentSocket.emit('model:pull:progress', { model: modelName, status: 'error', percent: null });
+        console.error('Model pull failed:', error);
+      }
+    }
+
+    socket.on('persona:create', async (data: any, ack?: Ack) => {
+      const user = requireUser(socket, ack);
+      if (!user) return;
+      try {
+        if (!(await checkCreateRateLimit(socket.id))) {
+          ack?.({ ok: false, error: 'Rate limit exceeded' });
+          return;
+        }
+        let model = typeof data?.model === 'string' ? data.model.trim().slice(0, 120) : '';
+        if (model) {
+          const validation = await validateModel(model);
+          if (!validation.valid) {
+            ack?.({ ok: false, error: validation.error, availableModels: validation.availableModels });
+            return;
+          }
+        } else {
+          const listed = await ollama.list();
+          model = listed.models[0]?.name || '';
+        }
+        if (!model) {
+          ack?.({ ok: false, error: 'No models installed' });
+          return;
+        }
+        const name = String(data?.name || '').trim();
+        const systemPrompt = String(data?.systemPrompt || '').trim();
+        if (!name || !systemPrompt) {
+          ack?.({ ok: false, error: 'Persona name and system prompt are required' });
+          return;
+        }
+
         const row = createPersonaRow({
-          id,
-          name: String(data.name || 'Unnamed').slice(0, 60),
+          id: randomUUID(),
+          name: name.slice(0, 60),
           model,
-          systemPrompt: String(data.systemPrompt || 'You are a helpful assistant.').slice(0, 4000),
-          temperature: Math.min(2, Math.max(0, Number(data.temperature ?? 0.7))),
-          enabled: data.enabled !== false,
-          description: data.description ? String(data.description).slice(0, 200) : undefined,
-          avatar: data.avatar ? String(data.avatar).slice(0, 4) : undefined,
-        });
-        registry.register(
-          { id: row.id, name: row.name, model: row.model, systemPrompt: row.systemPrompt, temperature: row.temperature, enabled: row.enabled, description: row.description, avatar: row.avatar },
-          DefaultAgent
-        );
-        console.log(`Persona created: ${row.name}`);
-        broadcastPersonas();
-      } catch (err) {
-        console.error('persona:create failed', err);
-        socket.emit('error', { message: 'Failed to create persona' });
+          systemPrompt: systemPrompt.slice(0, 4000),
+          temperature: Math.min(2, Math.max(0, Number(data?.temperature ?? 0.7))),
+          enabled: data?.enabled !== false,
+          enabledTools: data?.enabledTools === true,
+          description: data?.description ? String(data.description).slice(0, 200) : undefined,
+          avatar: data?.avatar ? String(data.avatar).slice(0, 4) : undefined,
+          userId: user.id,
+        }, user.id);
+        const AgentClass = row.enabledTools ? ToolEnabledDefaultAgent : DefaultAgent;
+        registry.register(row, AgentClass);
+        socket.emit('personas:list', registry.getAllPersonas(user.id));
+        ack?.({ ok: true, persona: row });
+      } catch (error) {
+        console.error('persona:create failed', error);
+        ack?.({ ok: false, error: 'Failed to create persona' });
       }
     });
 
-    socket.on('persona:update', ({ id, patch }: { id: string; patch: any }) => {
-      const row = updatePersonaRow(id, patch);
-      if (row) {
-        registry.updatePersona(id, {
-          name: row.name,
-          model: row.model,
-          systemPrompt: row.systemPrompt,
-          temperature: row.temperature,
-          enabled: row.enabled,
-          description: row.description,
-          avatar: row.avatar,
-        });
-        broadcastPersonas();
+    socket.on('persona:update', async ({ id, patch }: { id: string; patch: Partial<PersonaRow> }, ack?: Ack) => {
+      const user = requireUser(socket, ack);
+      if (!user) return;
+      const existing = registry.getPersona(String(id), user.id);
+      if (!existing) {
+        ack?.({ ok: false, error: 'Persona not found' });
+        return;
       }
-    });
-
-    socket.on('persona:delete', (id: string) => {
-      if (deletePersonaRow(id)) {
-        registry.unregister(id);
-        broadcastPersonas();
+      if (patch.model) {
+        const validation = await validateModel(patch.model);
+        if (!validation.valid) {
+          ack?.({ ok: false, error: validation.error, availableModels: validation.availableModels });
+          return;
+        }
       }
+      const row = updatePersonaRow(String(id), user.id, patch);
+      if (!row) {
+        ack?.({ ok: false, error: 'Persona not found' });
+        return;
+      }
+      if (existing.enabledTools !== row.enabledTools) {
+        registry.unregister(row.id);
+        const AgentClass = row.enabledTools ? ToolEnabledDefaultAgent : DefaultAgent;
+        registry.register(row, AgentClass);
+      } else {
+        registry.updatePersona(row.id, user.id, row);
+      }
+      socket.emit('personas:list', registry.getAllPersonas(user.id));
+      ack?.({ ok: true, persona: row });
     });
 
-    // Request conversations list
-    socket.on('conversation:list', () => {
-      socket.emit('conversation:list', getConversations());
+    socket.on('persona:delete', (id: string, ack?: Ack) => {
+      const user = requireUser(socket, ack);
+      if (!user) return;
+      if (!deletePersonaRow(String(id), user.id)) {
+        ack?.({ ok: false, error: 'Persona not found' });
+        return;
+      }
+      registry.unregister(String(id));
+      socket.emit('personas:list', registry.getAllPersonas(user.id));
+      ack?.({ ok: true });
     });
 
-    socket.on('conversation:create', (title?: string) => {
-      // Defensive: normalize title at handler level (defense in depth)
-      const safeTitle = (title ?? '').trim().slice(0, 120) || 'New Conversation';
-      const conversation = createConversation(safeTitle);
+    socket.on('persona:toggle', (id: string, ack?: Ack) => {
+      const user = requireUser(socket, ack);
+      if (!user) return;
+      const enabled = registry.toggleAgent(String(id), user.id);
+      if (enabled === undefined) {
+        ack?.({ ok: false, error: 'Persona not found' });
+        return;
+      }
+      socket.emit('personas:list', registry.getAllPersonas(user.id));
+      ack?.({ ok: true, enabled });
+    });
+
+    socket.on('personas:list', (ack?: Ack) => {
+      const user = requireUser(socket, ack);
+      if (!user) return;
+      socket.emit('personas:list', registry.getAllPersonas(user.id));
+      ack?.(registry.getAllPersonas(user.id));
+    });
+
+    socket.on('conversation:list', (ack?: Ack) => {
+      const user = requireUser(socket, ack);
+      if (!user) return;
+      const conversations = getConversations(user.id);
+      socket.emit('conversation:list', conversations);
+      ack?.(conversations);
+    });
+
+    socket.on('conversation:create', async (title?: string | null, ack?: Ack) => {
+      const user = requireUser(socket, ack);
+      if (!user) return;
+      if (!(await checkCreateRateLimit(socket.id))) {
+        ack?.({ ok: false, error: 'Rate limit exceeded' });
+        return;
+      }
+      const conversation = createConversation(title || 'New Conversation', user.id);
+      socket.join(conversation.id);
       socket.emit('conversation:created', conversation);
-      io.emit('conversation:list', getConversations());
+      emitConversationList(io, user.id);
+      ack?.({ ok: true, conversation });
     });
 
-    // Delete conversation
-    socket.on('conversation:delete', (id: string) => {
-      dbDeleteConversation(id);
-      io.emit('conversation:list', getConversations());
-      io.emit('conversation:deleted', id);
+    socket.on('conversation:delete', (id: string, ack?: Ack) => {
+      const user = requireUser(socket, ack);
+      if (!user) return;
+      const deleted = dbDeleteConversation(String(id), user.id);
+      if (!deleted) {
+        ack?.({ ok: false, error: 'Conversation not found' });
+        return;
+      }
+      socket.leave(String(id));
+      emitConversationList(io, user.id);
+      io.to(userRoom(user.id)).emit('conversation:deleted', String(id));
+      ack?.({ ok: true });
     });
 
-    // Rename conversation
-    socket.on('conversation:rename', ({ id, title }: { id: string; title: string }) => {
-      if (dbRenameConversation(id, title)) {
-        io.emit('conversation:list', getConversations());
+    socket.on('conversation:rename', ({ id, title }: { id: string; title: string }, ack?: Ack) => {
+      const user = requireUser(socket, ack);
+      if (!user) return;
+      const renamed = dbRenameConversation(String(id), user.id, String(title || ''));
+      if (!renamed) {
+        ack?.({ ok: false, error: 'Conversation not found' });
+        return;
+      }
+      emitConversationList(io, user.id);
+      ack?.({ ok: true });
+    });
+
+    socket.on('conversations:clear', (ack?: Ack) => {
+      const user = requireUser(socket, ack);
+      if (!user) return;
+      dbClearConversations(user.id);
+      io.to(userRoom(user.id)).emit('conversations:cleared');
+      emitConversationList(io, user.id);
+      ack?.({ ok: true });
+    });
+
+    socket.on('data:export', (ack?: Ack) => {
+      const user = requireUser(socket, ack);
+      if (!user) return;
+      ack?.(exportAllData(user.id));
+    });
+
+    socket.on('data:import', (data: unknown, ack?: Ack) => {
+      const user = requireUser(socket, ack);
+      if (!user) return;
+      const result = importAllData(data, user.id);
+      if (result.ok) {
+        syncUserPersonas(registry, user.id);
+        socket.emit('personas:list', registry.getAllPersonas(user.id));
+        emitConversationList(io, user.id);
+      }
+      ack?.(result);
+    });
+
+    socket.on('conversation:import', (data: unknown, ack?: Ack) => {
+      const user = requireUser(socket, ack);
+      if (!user) return;
+      const parsed = ConversationImportSchema.safeParse(data);
+      if (!parsed.success) {
+        ack?.({ ok: false, error: 'Invalid import format' });
+        return;
+      }
+      try {
+        const conversation = createConversation(parsed.data.title || 'Imported Conversation', user.id);
+        for (const message of parsed.data.messages) {
+          createMessage(
+            conversation.id,
+            message.role,
+            message.content,
+            undefined,
+            message.agentName,
+            false,
+            undefined,
+            message.createdAt,
+          );
+        }
+        emitConversationList(io, user.id);
+        ack?.({ ok: true, conversation });
+      } catch (error) {
+        ack?.({ ok: false, error: error instanceof Error ? error.message : 'Import failed' });
       }
     });
 
-    // Clear all conversations
-    socket.on('conversations:clear', () => {
-      dbClearConversations();
-      io.emit('conversation:list', getConversations());
-      io.emit('conversations:cleared');
+    socket.on('message:delete', (id: string, ack?: Ack) => {
+      const user = requireUser(socket, ack);
+      if (!user) return;
+      const result = deleteMessageRow(String(id), user.id);
+      if (!result.ok || !result.conversationId) {
+        ack?.({ ok: false, error: 'Message not found' });
+        return;
+      }
+      io.to(result.conversationId).emit('message:deleted', {
+        conversationId: result.conversationId,
+        id: String(id),
+      });
+      ack?.({ ok: true });
     });
 
     socket.on('disconnect', () => {
       console.log(`Client disconnected: ${socket.id}`);
+      cleanupRateLimit(socket.id);
     });
   });
+}

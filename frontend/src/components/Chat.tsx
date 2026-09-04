@@ -2,28 +2,32 @@ import { useEffect, useRef, useState } from 'react';
 import { useChatStore } from '../stores/useChatStore';
 import { MessageBubble } from './MessageBubble';
 import { InputBar } from './InputBar';
-import { PersonaSidebar } from './PersonaSidebar';
+import { PersonaModal } from './PersonaModal';
 import { SettingsModal } from './SettingsModal';
 import { LoginModal } from './LoginModal';
-import { MessageSquare, Plus, Settings, X, Download, Upload, Users, Menu, User as UserIcon } from 'lucide-react';
+import { MessageSquare, Plus, Settings, X, Menu, CheckCircle, Circle, Pencil } from 'lucide-react';
 import { cn } from '../lib/utils';
 import { useSocket } from '../hooks/useSocket';
-import { ImportPayloadSchema } from '../lib/importSchema';
+import { Persona } from '@ai-conv/types';
 
 export function Chat() {
-  const connected = useChatStore((s) => s.connected);
   const conversations = useChatStore((s) => s.conversations);
   const currentConversationId = useChatStore((s) => s.currentConversationId);
   const currentMessages = useChatStore((s) =>
     s.currentConversationId ? s.messages[s.currentConversationId] || [] : []
   );
   const agents = useChatStore((s) => s.agents);
+  const [searchQuery, setSearchQuery] = useState('');
+  const filteredConversations = conversations.filter((c) =>
+    c.title.toLowerCase().includes(searchQuery.toLowerCase())
+  );
   const currentUser = useChatStore((s) => s.currentUser);
   const setCurrentUser = useChatStore((s) => s.setCurrentUser);
   const setCurrentConversation = useChatStore((s) => s.setCurrentConversation);
   const toggleAgent = useChatStore((s) => s.toggleAgent);
 
   const {
+    connected,
     sendMessage,
     stopGeneration,
     joinConversation,
@@ -33,30 +37,33 @@ export function Chat() {
     updatePersona,
     deletePersona,
     createConversation,
-    deleteConversation,
-    renameConversation,
+
     clearConversations,
-    getModels: getModelsFn,
+    getModelsFull: getModelsFullFn,
     pullModel,
     listUsers,
     createUser,
+    selectUser,
     deleteExistingUser,
-    setParticipants,
+
     deleteMessage,
     regenerateMessage,
-    importConversation,
+
+    exportData,
+    importData,
   } = useSocket();
 
+  const stopStreaming = useChatStore((s) => s.stopStreaming);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const [settingsOpen, setSettingsOpen] = useState(false);
-  const [users, setUsers] = useState<{ id: string; name: string; avatar?: string }[]>([]);
-  const [participantsOpen, setParticipantsOpen] = useState(false);
+  const [users, setUsers] = useState<{ id: string; name: string; avatar?: string; createdAt: string }[]>([]);
   const [leftDrawer, setLeftDrawer] = useState(false);
-  const [rightDrawer, setRightDrawer] = useState(false);
+  const [personaModal, setPersonaModal] = useState<{ open: boolean; editing: Persona | null }>({ open: false, editing: null });
   const streamingCount = useChatStore((s) => Object.keys(s.streamingMessages).length);
   const currentConv = conversations.find((c) => c.id === currentConversationId);
 
   const scrollContainerRef = useRef<HTMLDivElement>(null);
+  const scrollRafRef = useRef<number | null>(null);
 
   // Autoscroll only while the user is already near the bottom; never yank the
   // viewport while they are reading history mid-stream.
@@ -65,28 +72,31 @@ export function Chat() {
     if (!el) return;
     const distance = el.scrollHeight - el.scrollTop - el.clientHeight;
     if (distance < 160) {
-      messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+      if (scrollRafRef.current !== null) return;
+      scrollRafRef.current = requestAnimationFrame(() => {
+        scrollRafRef.current = null;
+        if (el) el.scrollTop = el.scrollHeight;
+      });
     }
   }, [currentMessages]);
 
   // Load the next older page when the user scrolls to the top.
   const loadingOlderRef = useRef(false);
   const hasAllHistoryRef = useRef(false);
-  const handleScroll = () => {
+  const handleScroll = async () => {
     const el = scrollContainerRef.current;
     if (!el || !currentConversationId) return;
     if (el.scrollTop > 40 || loadingOlderRef.current || hasAllHistoryRef.current) return;
     loadingOlderRef.current = true;
     const prevHeight = el.scrollHeight;
     const prevTop = el.scrollTop;
-    loadOlderMessages(currentConversationId).then((gotMore) => {
-      hasAllHistoryRef.current = !gotMore;
-      // Keep the viewport anchored on the same content after prepend.
-      requestAnimationFrame(() => {
-        el.scrollTop = el.scrollHeight - prevHeight + prevTop;
-      });
-      loadingOlderRef.current = false;
+    const gotMore = await loadOlderMessages(currentConversationId);
+    hasAllHistoryRef.current = !gotMore;
+    // Keep the viewport anchored on the same content after prepend.
+    requestAnimationFrame(() => {
+      el.scrollTop = el.scrollHeight - prevHeight + prevTop;
     });
+    loadingOlderRef.current = false;
   };
 
   useEffect(() => {
@@ -98,77 +108,49 @@ export function Chat() {
     if (currentConversationId) {
       joinConversation(currentConversationId);
     }
+    // Clear any stale streaming state when switching conversations
+    stopStreaming('');
     return () => {
       if (currentConversationId) {
         leaveConversation(currentConversationId);
       }
     };
-  }, [currentConversationId, joinConversation, leaveConversation]);
+  }, [currentConversationId, joinConversation, leaveConversation, stopStreaming]);
 
   const [sendError, setSendError] = useState(false);
+  const [conversationError, setConversationError] = useState<string | null>(null);
 
   const handleSend = (content: string): boolean => {
     if (!currentConversationId) return false;
-    const ok = sendMessage(currentConversationId, content, { agentChat: useChatStore.getState().agentChat });
+    const tempId = crypto.randomUUID();
+    // Optimistically render user message immediately
+    useChatStore.getState().addMessage(currentConversationId, {
+      id: tempId,
+      conversationId: currentConversationId,
+      role: 'user',
+      content,
+      createdAt: new Date().toISOString(),
+      isStreaming: false,
+    });
+    const ok = sendMessage(currentConversationId, content, {
+      agentChat: useChatStore.getState().agentChat,
+      tempId,
+    });
     setSendError(!ok);
     return ok;
   };
 
-  const [renamingId, setRenamingId] = useState<string | null>(null);
-  const [renameDraft, setRenameDraft] = useState('');
-  const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null);
-
-  const commitRename = () => {
-    const t = renameDraft.trim();
-    if (renamingId && t) renameConversation(renamingId, t);
-    setRenamingId(null);
-  };
-
-
-  const handleNewConversation = () => createConversation();
-
-  const handleExport = () => {
-    if (!currentConversationId || currentMessages.length === 0) return;
-    const conv = conversations.find((c) => c.id === currentConversationId);
-    const lines = [`# ${conv?.title || 'Conversation'}`, ''];
-    for (const m of currentMessages) {
-      const who = m.role === 'user' ? 'You' : m.agentName || 'Agent';
-      lines.push(`**${who}** (${new Date(m.createdAt).toLocaleString()}):`, '', m.content, '', '---', '');
+  const handleNewConversation = async () => {
+    setConversationError(null);
+    const created = await createConversation();
+    if (!created) {
+      setConversationError(
+        connected
+          ? 'Conversation could not be created. Check your profile session and connection.'
+          : 'Conversation could not be created while disconnected.',
+      );
     }
-    const blob = new Blob([lines.join('\n')], { type: 'text/markdown' });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = `${(conv?.title || 'conversation').replace(/[^\w-]+/g, '_')}.md`;
-    a.click();
-    URL.revokeObjectURL(url);
-  };
-
-  const handleImport = async (file: File) => {
-    const MAX_BYTES = 5 * 1024 * 1024; // 5 MB
-    if (file.size > MAX_BYTES) {
-      alert('File too large (max 5 MB)');
-      return;
-    }
-    try {
-      const data: unknown = JSON.parse(await file.text());
-      const parsed = ImportPayloadSchema.safeParse(data);
-      if (!parsed.success) {
-        alert('Invalid conversation file');
-        return;
-      }
-      const conv = await importConversation(parsed.data);
-      if (conv) setCurrentConversation(conv.id);
-    } catch {
-      alert('Invalid conversation file');
-    }
-  };
-
-  const toggleParticipant = (personaId: string) => {
-    if (!currentConversationId || !currentConv) return;
-    const cur = currentConv.participants || [];
-    const next = cur.includes(personaId) ? cur.filter((p) => p !== personaId) : [...cur, personaId];
-    setParticipants(currentConversationId, next);
+    return created;
   };
 
   return (
@@ -185,7 +167,11 @@ export function Chat() {
         <div className="flex items-center gap-2">
           {/* User chip */}
           <button
-            onClick={() => { listUsers().then(setUsers); setCurrentUser(null); }}
+            onClick={async () => {
+              const availableUsers = await listUsers();
+              setUsers(availableUsers);
+              setCurrentUser(null);
+            }}
             className="flex items-center gap-1.5 px-2 py-1.5 rounded-lg hover:bg-gray-100 dark:hover:bg-gray-700"
             title="Switch profile"
           >
@@ -202,226 +188,152 @@ export function Chat() {
             </span>
           </div>
 
-          {/* Mobile drawers */}
-          <button
-            onClick={() => setLeftDrawer(true)}
-            className="md:hidden p-2 rounded-lg hover:bg-gray-100 dark:hover:bg-gray-700 text-gray-500"
-            aria-label="Conversations"
-          >
-            <Menu className="w-5 h-5" />
-          </button>
-          <button
-            onClick={() => setRightDrawer(true)}
-            className="lg:hidden p-2 rounded-lg hover:bg-gray-100 dark:hover:bg-gray-700 text-gray-500"
-            aria-label="Personas"
-          >
-            <UserIcon className="w-5 h-5" />
-          </button>
-
-          <button
-            onClick={handleNewConversation}
-            disabled={!connected}
-            className="p-2 rounded-lg hover:bg-gray-100 dark:hover:bg-gray-700 text-gray-500 dark:text-gray-400 disabled:opacity-40"
-            aria-label="New conversation"
-          >
-            <Plus className="w-5 h-5" />
-          </button>
-
-          <button
-            onClick={handleExport}
-            disabled={!currentConversationId || currentMessages.length === 0}
-            className="p-2 rounded-lg hover:bg-gray-100 dark:hover:bg-gray-700 text-gray-500 dark:text-gray-400 disabled:opacity-40"
-            aria-label="Export conversation"
-            title="Export as Markdown"
-          >
-            <Download className="w-5 h-5" />
-          </button>
-
-          <label
-            className={cn(
-              'p-2 rounded-lg hover:bg-gray-100 dark:hover:bg-gray-700 text-gray-500 dark:text-gray-400 cursor-pointer',
-              !connected && 'opacity-40 pointer-events-none'
-            )}
-            title="Import conversation (.json)"
-          >
-            <Upload className="w-5 h-5" />
-            <input
-              type="file"
-              accept=".json,application/json"
-              className="hidden"
-              onChange={(e) => {
-                const f = e.target.files?.[0];
-                if (f) handleImport(f);
-                e.currentTarget.value = '';
-              }}
-            />
-          </label>
-
-          {/* Participants picker */}
-          <div className="relative">
-            <button
-              onClick={() => setParticipantsOpen((v) => !v)}
-              disabled={!currentConversationId}
-              className={cn(
-                'p-2 rounded-lg hover:bg-gray-100 dark:hover:bg-gray-700 text-gray-500 dark:text-gray-400 disabled:opacity-40',
-                participantsOpen && 'bg-gray-100 dark:bg-gray-700'
-              )}
-              aria-label="Who replies in this chat"
-              title="Who replies in this chat"
-            >
-              <Users className="w-5 h-5" />
-            </button>
-            {participantsOpen && (
-              <>
-                <div className="fixed inset-0 z-40" onClick={() => setParticipantsOpen(false)} />
-                <div className="absolute right-0 top-11 z-50 w-60 bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-xl shadow-lg p-2">
-                  <p className="text-xs font-medium text-gray-500 dark:text-gray-400 px-2 py-1">
-                    Personas replying here
-                  </p>
-                  {agents.length === 0 && (
-                    <p className="text-xs text-gray-400 px-2 py-2">No personas yet</p>
-                  )}
-                  {agents.map((a) => {
-                    const checked = !currentConv?.participants || currentConv.participants.length === 0 || currentConv.participants.includes(a.id);
-                    return (
-                      <label key={a.id} className="flex items-center gap-2 px-2 py-1.5 rounded-lg hover:bg-gray-50 dark:hover:bg-gray-700/50 cursor-pointer text-sm text-gray-700 dark:text-gray-200">
-                        <input
-                          type="checkbox"
-                          checked={checked}
-                          onChange={() => toggleParticipant(a.id)}
-                          className="accent-blue-600"
-                        />
-                        <span>{a.avatar || '🤖'}</span>
-                        <span className="truncate">{a.name}</span>
-                      </label>
-                    );
-                  })}
-                  <p className="text-[10px] text-gray-400 px-2 pt-1">Unchecked personas stay silent in this chat</p>
-                </div>
-              </>
-            )}
-          </div>
-
           <button
             onClick={() => setSettingsOpen(true)}
-            className="p-2 rounded-lg hover:bg-gray-100 dark:hover:bg-gray-700 text-gray-500 dark:text-gray-400"
+            className="p-2 rounded-lg hover:bg-gray-100 dark:hover:bg-gray-700 text-gray-600 dark:text-gray-300"
+            title="Settings"
             aria-label="Settings"
           >
             <Settings className="w-5 h-5" />
           </button>
+
+          <button
+            onClick={() => { setLeftDrawer(true); listUsers().then(setUsers); }}
+            className="md:hidden p-2 rounded-lg hover:bg-gray-100 dark:hover:bg-gray-700 text-gray-600 dark:text-gray-300"
+            title="Conversations"
+          >
+            <Menu className="w-5 h-5" />
+          </button>
         </div>
       </header>
 
-      {/* Main */}
       <div className="flex-1 flex overflow-hidden">
-        {/* Conversations */}
-        <aside className="hidden md:flex w-64 bg-white dark:bg-gray-800 border-r border-gray-200 dark:border-gray-700 flex-col">
-          <div className="p-4 border-b border-gray-200 dark:border-gray-700">
-            <h2 className="font-medium text-gray-900 dark:text-gray-100">Conversations</h2>
-          </div>
-          <div className="flex-1 overflow-y-auto p-2 space-y-1 scrollbar-thin">
-            {conversations.length === 0 ? (
-              <div className="text-center text-gray-500 dark:text-gray-400 py-8 text-sm">No conversations yet</div>
-            ) : (
-              conversations.map((conv) => (
-                <div
-                  key={conv.id}
-                  className={cn(
-                    'group relative rounded-lg cursor-pointer transition-colors',
-                    currentConversationId === conv.id
-                      ? 'bg-blue-50 dark:bg-blue-900/30'
-                      : 'hover:bg-gray-50 dark:hover:bg-gray-700/50'
-                  )}
-                  onClick={() => setCurrentConversation(conv.id)}
-                  onDoubleClick={() => { setRenamingId(conv.id); setRenameDraft(conv.title); }}
-                >
-                  {renamingId === conv.id ? (
-                    <input
-                      autoFocus
-                      value={renameDraft}
-                      onChange={(e) => setRenameDraft(e.target.value)}
-                      onBlur={commitRename}
-                      onKeyDown={(e) => {
-                        if (e.key === 'Enter') commitRename();
-                        if (e.key === 'Escape') setRenamingId(null);
-                      }}
-                      onClick={(e) => e.stopPropagation()}
-                      className="w-full px-1.5 py-0.5 text-sm font-medium bg-white dark:bg-gray-700 border border-blue-400 rounded text-gray-900 dark:text-gray-100 focus:outline-none"
-                    />
-                  ) : (
-                    <p
-                      className={cn(
-                        'font-medium text-sm truncate',
-                        currentConversationId === conv.id
-                          ? 'text-blue-700 dark:text-blue-300'
-                          : 'text-gray-700 dark:text-gray-200'
-                      )}
-                    >
-                      {conv.title}
-                    </p>
-                  )}
-                  {confirmDeleteId === conv.id ? (
-                    <div className="absolute right-1 top-1/2 -translate-y-1/2 flex items-center gap-1 bg-white dark:bg-gray-800 rounded-lg shadow px-1.5 py-0.5 border border-gray-200 dark:border-gray-700">
-                      <span className="text-[10px] text-gray-500 dark:text-gray-400">Delete?</span>
-                      <button
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          deleteConversation(conv.id);
-                          setConfirmDeleteId(null);
-                        }}
-                        className="text-[10px] font-medium text-red-500 hover:text-red-600 px-1"
-                      >
-                        Yes
-                      </button>
-                      <button
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          setConfirmDeleteId(null);
-                        }}
-                        className="text-[10px] text-gray-500 hover:text-gray-700 px-1"
-                        aria-label="Cancel delete"
-                      >
-                        No
-                      </button>
-                    </div>
-                  ) : (
-                    <button
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        setConfirmDeleteId(conv.id);
-                      }}
-                      className="absolute right-2 top-1/2 -translate-y-1/2 p-1 rounded text-gray-300 hover:text-red-500 opacity-0 group-hover:opacity-100"
-                      aria-label="Delete conversation"
-                    >
-                      <X className="w-4 h-4" />
-                    </button>
-                  )}
-                </div>
-              ))
-            )}
-          </div>
-          <div className="p-3 border-t border-gray-200 dark:border-gray-700">
-            <button
-              onClick={handleNewConversation}
-              disabled={!connected}
-              className="w-full flex items-center justify-center gap-2 px-4 py-2 text-sm font-medium text-blue-600 dark:text-blue-400 hover:bg-blue-50 dark:hover:bg-blue-900/30 rounded-lg disabled:opacity-40"
-            >
-              <Plus className="w-4 h-4" />
-              New Conversation
-            </button>
-          </div>
-        </aside>
-
-        {/* Chat area */}
-        <main className="flex-1 flex flex-col min-w-0">
-          <div ref={scrollContainerRef} onScroll={handleScroll} className="flex-1 overflow-y-auto p-4 space-y-4 scrollbar-thin">
-            {currentMessages.length === 0 ? (
-              <div className="flex flex-col items-center justify-center h-full text-gray-400 dark:text-gray-500">
-                <MessageSquare className="w-12 h-12 mb-4 opacity-50" />
-                <p className="text-lg">Start chatting</p>
-                <p className="text-sm">Enabled personas will reply. Use @Name to target one.</p>
+        {/* Mobile left drawer */}
+        {leftDrawer && (
+          <div className="fixed inset-0 z-40 md:hidden" onClick={() => setLeftDrawer(false)}>
+            <div className="absolute inset-0 bg-black/40" />
+            <div className="absolute left-0 top-0 bottom-0 w-72 bg-white dark:bg-gray-800 shadow-xl" onClick={(e) => e.stopPropagation()}>
+              <div className="flex items-center justify-between p-4 border-b border-gray-200 dark:border-gray-700">
+                <h2 className="font-medium text-gray-900 dark:text-gray-100">Conversations</h2>
+                <button onClick={() => setLeftDrawer(false)} className="p-1 text-gray-400"><X className="w-5 h-5" /></button>
               </div>
-            ) : (
+              <div className="p-2 border-b border-gray-200 dark:border-gray-700">
+                <input
+                  type="text"
+                  placeholder="Search conversations..."
+                  value={searchQuery}
+                  onChange={(e) => setSearchQuery(e.target.value)}
+                  className="w-full px-3 py-2 text-sm bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-100 border border-gray-200 dark:border-gray-600 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
+                />
+              </div>
+              <div className="overflow-y-auto p-2 space-y-1 max-h-[calc(100vh-160px)]">
+                {filteredConversations.map((conv) => (
+                  <button
+                    key={conv.id}
+                    onClick={() => { setCurrentConversation(conv.id); setLeftDrawer(false); }}
+                    className={cn(
+                      'w-full p-3 rounded-lg text-left',
+                      currentConversationId === conv.id ? 'bg-blue-50 dark:bg-blue-900/30' : 'hover:bg-gray-50 dark:hover:bg-gray-700/50'
+                    )}
+                  >
+                    <p className="text-sm font-medium truncate text-gray-800 dark:text-gray-100">{conv.title}</p>
+                  </button>
+                ))}
+              </div>
+              <div className="p-3 border-t border-gray-200 dark:border-gray-700">
+                <button onClick={async () => { if (await handleNewConversation()) setLeftDrawer(false); }} className="w-full flex items-center justify-center gap-2 px-4 py-2 text-sm font-medium text-blue-600 dark:text-blue-400 hover:bg-blue-50 dark:hover:bg-blue-900/30 rounded-lg">
+                  <Plus className="w-4 h-4" /> New Conversation
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* Main chat area */}
+        <main className="flex-1 flex flex-col min-w-0">
+          {/* Conversation header - includes search on desktop */}
+          <div className="bg-white dark:bg-gray-800 border-b border-gray-200 dark:border-gray-700 px-4 py-2 hidden lg:block">
+            <input
+              type="text"
+              placeholder="Search conversations..."
+              value={searchQuery}
+              onChange={(e) => setSearchQuery(e.target.value)}
+              className="w-full px-3 py-2 text-sm bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-100 border border-gray-200 dark:border-gray-600 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
+            />
+          </div>
+          {/* Conversation header */}
+          {currentConversationId && (
+            <div className="bg-white dark:bg-gray-800 border-b border-gray-200 dark:border-gray-700 px-4 py-3 flex items-center justify-between">
+              <div className="flex items-center gap-3 min-w-0">
+                <h2 className="font-medium text-gray-900 dark:text-gray-100 truncate">{currentConv?.title || 'Conversation'}</h2>
+                <span className="text-xs text-gray-500 dark:text-gray-400">
+                  {currentMessages.filter(m => m.role === 'agent').length} responses
+                </span>
+              </div>
+
+            </div>
+          )}
+
+          {/* Persona bar — always visible above chat */}
+          <div className="bg-white dark:bg-gray-800 border-b border-gray-200 dark:border-gray-700 px-3 py-2">
+            <div className="flex items-center gap-2 overflow-x-auto scrollbar-thin">
+              <span className="text-xs font-semibold text-gray-500 dark:text-gray-400 whitespace-nowrap mr-1">
+                {agents.filter(a => a.enabled).length}/{agents.length}
+              </span>
+              {agents.map((agent) => (
+                <button
+                  key={agent.id}
+                  onClick={() => toggleAgent(agent.id)}
+                  className={cn(
+                    'flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs font-medium whitespace-nowrap shrink-0 transition-colors',
+                    agent.enabled
+                      ? 'bg-green-50 dark:bg-green-900/30 text-green-700 dark:text-green-300 border border-green-200 dark:border-green-800'
+                      : 'bg-gray-100 dark:bg-gray-700 text-gray-400 dark:text-gray-500 border border-gray-200 dark:border-gray-600'
+                  )}
+                >
+                  <span className="text-sm">{agent.avatar || agent.name[0]}</span>
+                  <span className="max-w-[80px] truncate">{agent.name}</span>
+                  {agent.enabled ? <CheckCircle className="w-3 h-3" /> : <Circle className="w-3 h-3" />}
+                  <span
+                    onClick={(e) => { e.stopPropagation(); setPersonaModal({ open: true, editing: agent }); }}
+                    className="ml-1 hover:text-blue-500"
+                  >
+                    <Pencil className="w-3 h-3" />
+                  </span>
+                </button>
+              ))}
+              <button
+                onClick={() => setPersonaModal({ open: true, editing: null })}
+                className="flex items-center gap-1 px-2.5 py-1.5 rounded-lg text-xs font-medium text-blue-600 dark:text-blue-400 bg-blue-50 dark:bg-blue-900/30 hover:bg-blue-100 dark:hover:bg-blue-900/50 border border-blue-200 dark:border-blue-800 whitespace-nowrap shrink-0"
+              >
+                <Plus className="w-3.5 h-3.5" />
+                New
+              </button>
+            </div>
+          </div>
+
+          {/* Messages */}
+          <div className="flex-1 min-h-0 overflow-y-auto p-4 space-y-4" ref={scrollContainerRef} onScroll={handleScroll}>
+            {currentMessages.length === 0 && !currentConversationId && (
+              <div className="flex flex-col items-center justify-center h-full text-center text-gray-500 dark:text-gray-400">
+                <MessageSquare className="w-16 h-16 mb-4 opacity-50" />
+                <h3 className="text-lg font-medium">No conversation selected</h3>
+                <p className="text-sm">Create or select a conversation to start chatting</p>
+                <button onClick={() => { void handleNewConversation(); }} className="mt-4 px-4 py-2 text-sm font-medium text-blue-600 dark:text-blue-400 hover:bg-blue-50 dark:hover:bg-blue-900/30 rounded-lg">
+                  <Plus className="w-4 h-4 mr-2" /> New Conversation
+                </button>
+              </div>
+            )}
+
+            {currentMessages.length === 0 && currentConversationId && (
+              <div className="flex flex-col items-center justify-center h-full text-center text-gray-500 dark:text-gray-400">
+                <MessageSquare className="w-16 h-16 mb-4 opacity-50" />
+                <h3 className="text-lg font-medium">No messages yet</h3>
+                <p className="text-sm">Start the conversation!</p>
+              </div>
+            )}
+
+            {currentMessages.length > 0 && (
               <>
                 {currentMessages.map((msg, i) => (
                   <MessageBubble
@@ -435,56 +347,79 @@ export function Chat() {
                 <div ref={messagesEndRef} />
               </>
             )}
+
+            {streamingCount > 0 && (
+              <div className="px-4 pb-1 flex justify-center">
+                <button
+                  onClick={() => currentConversationId && stopGeneration(currentConversationId)}
+                  className="px-4 py-1.5 text-xs font-medium rounded-full bg-red-100 dark:bg-red-900/40 text-red-600 dark:text-red-300 hover:bg-red-200 dark:hover:bg-red-900/60"
+                >
+                  Stop generating
+                </button>
+              </div>
+            )}
+            {conversationError && (
+              <div className="px-4 pb-1 flex justify-center">
+                <span className="text-xs text-red-500 dark:text-red-400">
+                  {conversationError}
+                </span>
+              </div>
+            )}
+            {sendError && (
+              <div className="px-4 pb-1 flex justify-center">
+                <span className="text-xs text-red-500 dark:text-red-400">
+                  Message not sent — connection lost. Your draft is preserved.
+                </span>
+              </div>
+            )}
           </div>
 
-          {streamingCount > 0 && (
-            <div className="px-4 pb-1 flex justify-center">
-              <button
-                onClick={() => currentConversationId && stopGeneration(currentConversationId)}
-                className="px-4 py-1.5 text-xs font-medium rounded-full bg-red-100 dark:bg-red-900/40 text-red-600 dark:text-red-300 hover:bg-red-200 dark:hover:bg-red-900/60"
-              >
-                Stop generating
-              </button>
-            </div>
-          )}
-          {sendError && (
-            <div className="px-4 pb-1 flex justify-center">
-              <span className="text-xs text-red-500 dark:text-red-400">
-                Message not sent — connection lost. Your draft is preserved.
-              </span>
-            </div>
-          )}
-
-          <InputBar onSend={handleSend} disabled={!currentConversationId || !connected} />
+          {/* Keep the composer outside the scrollable message history so it
+              remains fixed at the bottom while messages grow upward. */}
+          <div className="shrink-0 bg-white dark:bg-gray-800">
+            <InputBar onSend={handleSend} disabled={!currentConversationId || !connected} />
+          </div>
         </main>
-
-        {/* Personas */}
-        <aside className="hidden lg:block">
-          <PersonaSidebar
-            agents={agents}
-            onToggle={toggleAgent}
-            onCreate={createPersona}
-            onUpdate={updatePersona}
-            onDelete={deletePersona}
-            getModels={getModelsFn}
-          />
-        </aside>
       </div>
+
+      {/* Persona modal */}
+      <PersonaModal
+        key={personaModal.open ? `open-${personaModal.editing?.id || 'new'}` : 'closed'}
+        open={personaModal.open}
+        editing={personaModal.editing}
+        getModels={getModelsFullFn}
+        pullModel={pullModel}
+        onClose={() => setPersonaModal({ open: false, editing: null })}
+        onSave={(data) => {
+          if (personaModal.editing) updatePersona(personaModal.editing.id, data);
+          else createPersona(data);
+        }}
+        onDelete={deletePersona}
+      />
 
       <SettingsModal
         open={settingsOpen}
         onClose={() => setSettingsOpen(false)}
         onClearConversations={clearConversations}
-        getModels={getModelsFn}
+        getModels={getModelsFullFn}
         pullModel={pullModel}
+        exportData={exportData}
+        importData={importData}
       />
 
       <LoginModal
-        key={currentUser ? 'picked' : 'open'}
+        key={currentUser ? 'picked' : `open-${users.length > 0 ? 'users' : 'empty'}`}
         open={!currentUser}
         users={users}
-        onPick={setCurrentUser}
-        onCreate={createUser}
+        onPick={async (user) => {
+          const selected = await selectUser(user.id);
+          if (selected) setCurrentUser(selected);
+        }}
+        onCreate={async (name, avatar) => {
+          const created = await createUser(name, avatar);
+          if (created) setCurrentUser(created);
+          return created;
+        }}
         onDeleteUser={(id) => {
           deleteExistingUser(id);
           if (currentUser?.id === id) setCurrentUser(null);
@@ -492,54 +427,6 @@ export function Chat() {
         }}
       />
 
-      {/* Mobile left drawer */}
-      {leftDrawer && (
-        <div className="fixed inset-0 z-40 md:hidden" onClick={() => setLeftDrawer(false)}>
-          <div className="absolute inset-0 bg-black/40" />
-          <div className="absolute left-0 top-0 bottom-0 w-72 bg-white dark:bg-gray-800 shadow-xl" onClick={(e) => e.stopPropagation()}>
-            <div className="flex items-center justify-between p-4 border-b border-gray-200 dark:border-gray-700">
-              <h2 className="font-medium text-gray-900 dark:text-gray-100">Conversations</h2>
-              <button onClick={() => setLeftDrawer(false)} className="p-1 text-gray-400"><X className="w-5 h-5" /></button>
-            </div>
-            <div className="overflow-y-auto p-2 space-y-1 max-h-[calc(100vh-120px)]">
-              {conversations.map((conv) => (
-                <button
-                  key={conv.id}
-                  onClick={() => { setCurrentConversation(conv.id); setLeftDrawer(false); }}
-                  className={cn(
-                    'w-full p-3 rounded-lg text-left',
-                    currentConversationId === conv.id ? 'bg-blue-50 dark:bg-blue-900/30' : 'hover:bg-gray-50 dark:hover:bg-gray-700/50'
-                  )}
-                >
-                  <p className="text-sm font-medium truncate text-gray-800 dark:text-gray-100">{conv.title}</p>
-                </button>
-              ))}
-            </div>
-            <div className="p-3 border-t border-gray-200 dark:border-gray-700">
-              <button onClick={() => { createConversation(); setLeftDrawer(false); }} className="w-full flex items-center justify-center gap-2 px-4 py-2 text-sm font-medium text-blue-600 dark:text-blue-400 hover:bg-blue-50 dark:hover:bg-blue-900/30 rounded-lg">
-                <Plus className="w-4 h-4" /> New Conversation
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* Mobile right drawer (personas) */}
-      {rightDrawer && (
-        <div className="fixed inset-0 z-40 lg:hidden" onClick={() => setRightDrawer(false)}>
-          <div className="absolute inset-0 bg-black/40" />
-          <div className="absolute right-0 top-0 bottom-0 w-80 shadow-xl" onClick={(e) => e.stopPropagation()}>
-            <PersonaSidebar
-              agents={agents}
-              onToggle={toggleAgent}
-              onCreate={createPersona}
-              onUpdate={updatePersona}
-              onDelete={deletePersona}
-              getModels={getModelsFn}
-            />
-          </div>
-        </div>
-      )}
     </div>
   );
 }

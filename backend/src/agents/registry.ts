@@ -1,28 +1,33 @@
-import { BaseAgent } from './base';
-import { Persona } from '../types';
+import { BaseAgent } from './base.js';
+import { Persona } from '@ai-conv/types';
 import { Server } from 'socket.io';
+import { updatePersonaRow } from '../storage/db.js';
 
-// ============ Agent Registry ============
+type OwnedPersona = Persona & { userId?: string };
+
 export class AgentRegistry {
-  private agents: Map<string, BaseAgent> = new Map();
-  private personas: Map<string, Persona> = new Map();
+  private agents = new Map<string, BaseAgent>();
+  private personas = new Map<string, OwnedPersona>();
   private io: Server;
 
   constructor(io: Server) {
     this.io = io;
   }
 
-  register(persona: Persona, agentClass: new (persona: Persona, io: Server) => BaseAgent) {
+  register(persona: OwnedPersona, agentClass: new (persona: Persona, io: Server) => BaseAgent): void {
     this.personas.set(persona.id, persona);
-    const agent = new agentClass(persona, this.io);
-    this.agents.set(persona.id, agent);
+    this.agents.set(persona.id, new agentClass(persona, this.io));
   }
 
   unregister(id: string): boolean {
-    return this.agents.delete(id) && this.personas.delete(id);
+    const removedAgent = this.agents.delete(id);
+    const removedPersona = this.personas.delete(id);
+    return removedAgent || removedPersona;
   }
 
-  get(id: string): BaseAgent | undefined {
+  get(id: string, userId?: string): BaseAgent | undefined {
+    const persona = this.personas.get(id);
+    if (userId && persona?.userId !== userId) return undefined;
     return this.agents.get(id);
   }
 
@@ -30,28 +35,35 @@ export class AgentRegistry {
     return Array.from(this.agents.values());
   }
 
-  getEnabled(): BaseAgent[] {
-    return this.getAll().filter(a => a.enabled);
+  getEnabled(userId?: string): BaseAgent[] {
+    return this.getAll().filter((agent) => {
+      if (!agent.enabled) return false;
+      if (!userId) return true;
+      return this.personas.get(agent.id)?.userId === userId;
+    });
   }
 
-  getPersona(id: string): Persona | undefined {
-    return this.personas.get(id);
-  }
-
-  getAllPersonas(): Persona[] {
-    return Array.from(this.personas.values());
-  }
-
-  toggleAgent(id: string): boolean {
+  getPersona(id: string, userId?: string): OwnedPersona | undefined {
     const persona = this.personas.get(id);
-    if (!persona) return false;
+    if (userId && persona?.userId !== userId) return undefined;
+    return persona;
+  }
+
+  getAllPersonas(userId?: string): OwnedPersona[] {
+    return Array.from(this.personas.values()).filter((persona) => !userId || persona.userId === userId);
+  }
+
+  toggleAgent(id: string, userId: string): boolean | undefined {
+    const persona = this.personas.get(id);
+    if (!persona || persona.userId !== userId) return undefined;
     persona.enabled = !persona.enabled;
+    updatePersonaRow(id, userId, { enabled: persona.enabled });
     return persona.enabled;
   }
 
-  updatePersona(id: string, updates: Partial<Persona>): Persona | undefined {
+  updatePersona(id: string, userId: string, updates: Partial<Persona>): Persona | undefined {
     const persona = this.personas.get(id);
-    if (!persona) return undefined;
+    if (!persona || persona.userId !== userId) return undefined;
     Object.assign(persona, updates);
     return persona;
   }

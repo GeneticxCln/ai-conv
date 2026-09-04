@@ -1,0 +1,87 @@
+services:
+  ollama:
+    image: ollama/ollama:latest
+    container_name: ai-conv-ollama-dev
+    volumes:
+      - ollama_data:/root/.ollama
+    healthcheck:
+      test: ["CMD", "ollama", "list"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    restart: unless-stopped
+
+  model-puller:
+    image: ollama/ollama:latest
+    container_name: ai-conv-model-puller-dev
+    environment:
+      - OLLAMA_HOST=http://ollama:11434
+    command: ["pull", "llama3.1:8b"]
+    depends_on:
+      ollama:
+        condition: service_healthy
+    restart: "no"
+
+  backend:
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
+      target: build
+    container_name: ai-conv-backend-dev
+    ports:
+      - "3001:3001"
+    env_file:
+      - .env
+    environment:
+      - NODE_ENV=development
+      - OLLAMA_HOST=http://ollama:11434
+      - CORS_ORIGIN=http://localhost:5173
+      - PORT=3001
+      - DATABASE_PATH=/data/ai-conv.db
+      - JWT_SECRET=${JWT_SECRET:?Set JWT_SECRET in .env or run npm run setup}
+    volumes:
+      - ./backend/src:/app/backend/src
+      - ./backend/tsconfig.json:/app/backend/tsconfig.json:ro
+      - ./backend/add-js-extensions.js:/app/backend/add-js-extensions.js:ro
+      - sqlite_data:/data
+    depends_on:
+      ollama:
+        condition: service_healthy
+    restart: unless-stopped
+    command: npm run dev --workspace=backend
+
+  frontend:
+    build:
+      context: .
+      dockerfile: frontend/Dockerfile
+      target: dev
+      args:
+        VITE_WS_URL: http://localhost:3001
+        VITE_API_URL: http://localhost:3001
+    container_name: ai-conv-frontend-dev
+    ports:
+      - "5173:5173"
+    env_file:
+      - .env
+    environment:
+      - VITE_WS_URL=http://localhost:3001
+      - VITE_API_URL=http://localhost:3001
+      - BACKEND_PROXY_TARGET=http://backend:3001
+    volumes:
+      - ./frontend/src:/app/frontend/src
+      - ./frontend/index.html:/app/frontend/index.html:ro
+      - ./frontend/vite.config.ts:/app/frontend/vite.config.ts:ro
+      - ./frontend/tsconfig.json:/app/frontend/tsconfig.json:ro
+      - ./frontend/tsconfig.node.json:/app/frontend/tsconfig.node.json:ro
+    depends_on:
+      - backend
+    restart: unless-stopped
+
+volumes:
+  ollama_data:
+  sqlite_data:
+
+networks:
+  default:
+    name: ai-conv-network-dev

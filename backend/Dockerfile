@@ -1,17 +1,19 @@
-FROM node:20-alpine
+FROM node:20-alpine AS build
 
 WORKDIR /app
+RUN apk add --no-cache sqlite-libs python3 make g++
 
-RUN apk add --no-cache sqlite-libs
+COPY package.json package-lock.json ./
+COPY backend/package.json ./backend/package.json
+COPY frontend/package.json ./frontend/package.json
+COPY packages/types/package.json ./packages/types/package.json
+RUN npm ci --legacy-peer-deps --omit=optional --no-audit --no-fund
 
-COPY backend/package*.json ./
-RUN npm install --no-audit --no-fund
+COPY packages/types ./packages/types
+RUN npm run build --workspace=@ai-conv/types
 
-COPY backend/src ./src
-COPY backend/tsconfig.json ./
-
-RUN npm run build
+COPY backend ./backend
+RUN npm run build --workspace=backend
 
 EXPOSE 3001
-
-CMD ["node", "dist/index.js"]
+CMD ["node", "backend/dist/index.js"]

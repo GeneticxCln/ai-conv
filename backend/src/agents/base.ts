@@ -1,5 +1,6 @@
-import { Persona, Message, AgentTokenPayload, AgentDonePayload, AgentErrorPayload } from '../types';
+import { Persona, Message, AgentTokenPayload, AgentDonePayload, AgentErrorPayload } from '@ai-conv/types';
 import { streamChat, StreamChunk } from '../llm/ollama';
+import { truncateHistory } from '../utils.js';
 import { Server } from 'socket.io';
 
 // ============ Base Agent ============
@@ -34,31 +35,43 @@ export abstract class BaseAgent {
   // Continue without a new user message (agent-to-agent round)
   abstract handleContinue(conversationId: string, history: Message[]): Promise<void>;
 
-  // Stream response to socket
+  // Stream response to socket. Callers pass the messageId of the DB message
+  // being streamed so that every token carries a valid messageId to the
+  // frontend (fixes multi-agent streaming where all agents previously
+  // shared messageId='').
   async *streamResponse(
     conversationId: string,
     history: Message[],
     userMessage: string,
-    signal?: AbortSignal
+    signal?: AbortSignal,
+    messageId?: string
   ): AsyncGenerator<StreamChunk> {
-    const mapped = history.map(m => ({
+    // Truncate to most recent 40 messages to prevent context overflow
+    const truncated = truncateHistory(history);
+    // Safety cap: never send more than 40 history messages even if
+    // truncateHistory misbehaves.
+    const capped = truncated.slice(-40);
+    const mapped = capped.map(m => ({
       role: m.role === 'agent' ? 'assistant' as const : m.role,
       content: m.content,
     }));
     const messages = userMessage
-      ? [...mapped, { role: 'user' as const, content: userMessage }]
-      : mapped;
+      ? [{ role: 'system' as const, content: this.persona.systemPrompt }, ...mapped, { role: 'user' as const, content: userMessage }]
+      : [{ role: 'system' as const, content: this.persona.systemPrompt }, ...mapped, { role: 'user' as const, content: 'Please continue the discussion.' }];
 
     for await (const chunk of streamChat(this.persona, messages, signal)) {
-      this.emitToken(conversationId, chunk.token, chunk.done);
+      if (chunk.error) {
+        throw new Error(chunk.error);
+      }
+      this.emitToken(conversationId, chunk.token, chunk.done, messageId);
       yield chunk;
     }
   }
 
-  protected emitToken(conversationId: string, token: string, isDone: boolean) {
+  protected emitToken(conversationId: string, token: string, isDone: boolean, messageId?: string) {
     const payload: AgentTokenPayload = {
       conversationId,
-      messageId: '', // Will be filled by caller
+      messageId: messageId ?? '',
       agentId: this.id,
       agentName: this.name,
       token,

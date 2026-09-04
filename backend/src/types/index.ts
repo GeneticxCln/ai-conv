@@ -8,12 +8,14 @@ export type AgentId = z.infer<typeof AgentIdSchema>;
 export const PersonaSchema = z.object({
   id: z.string().min(1),
   name: z.string().min(1),
-  model: z.string().default('llama3.1:8b'),
+  model: z.string().min(1),
   systemPrompt: z.string().min(1),
   temperature: z.number().min(0).max(2).default(0.7),
   enabled: z.boolean().default(true),
   description: z.string().optional(),
   avatar: z.string().optional(),
+  enabledTools: z.boolean().default(false),
+  userId: z.string().uuid().optional(),
 });
 export type Persona = z.infer<typeof PersonaSchema>;
 
@@ -39,13 +41,15 @@ export const ConversationSchema = z.object({
   title: z.string().default('New Conversation'),
   createdAt: z.string().datetime(),
   updatedAt: z.string().datetime(),
+  userId: z.string().uuid().optional(),
+  participants: z.array(z.string().uuid()).optional(),
 });
 export type Conversation = z.infer<typeof ConversationSchema>;
 
 // ============ Socket Events ============
 export const UserMessagePayloadSchema = z.object({
   conversationId: z.string().uuid(),
-  content: z.string().min(1),
+  content: z.string(),
   agentChat: z.boolean().optional(),
   tempId: z.string().uuid().optional(),
 });
@@ -76,6 +80,8 @@ export const AgentErrorPayloadSchema = z.object({
   agentName: z.string(),
   error: z.string(),
 });
+export type AgentErrorPayload = z.infer<typeof AgentErrorPayloadSchema>;
+
 export const ConversationImportSchema = z.object({
   title: z.string().max(200).optional(),
   messages: z.array(z.object({
@@ -87,7 +93,6 @@ export const ConversationImportSchema = z.object({
 });
 export type ConversationImport = z.infer<typeof ConversationImportSchema>;
 
-// ============ Socket Event Names ============
 export const SocketEvents = {
   USER_MESSAGE: 'user:message',
   AGENT_TOKEN: 'agent:token',
@@ -97,7 +102,31 @@ export const SocketEvents = {
   CONVERSATION_CREATE: 'conversation:create',
   AGENTS_LIST: 'agents:list',
   AGENT_TOGGLE: 'agent:toggle',
-} as const;
+}
+// export { z };  // Removed duplicate - already exported at line 104
+
+// ============ Tool Types ============
+export interface Tool {
+  name: string;
+  description: string;
+  parameters: {
+    type: 'object';
+    properties: Record<string, { type: string; description: string }>;
+    required: string[];
+  };
+  execute: (params: Record<string, unknown>) => Promise<string>;
+}
+
+export interface ToolCall {
+  name: string;
+  arguments: Record<string, unknown>;
+}
+
+export interface ToolResult {
+  name: string;
+  result: string;
+  error?: string;
+}
 
 // ============ API Types ============
 export const HealthResponseSchema = z.object({
@@ -106,3 +135,5 @@ export const HealthResponseSchema = z.object({
   ollama: z.boolean(),
 });
 export type HealthResponse = z.infer<typeof HealthResponseSchema>;
+
+export { z };

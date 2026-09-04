@@ -1,0 +1,53 @@
+<!DOCTYPE html>
+<html>
+<head><title>Socket Test</title></head>
+<body>
+<h1>Socket.io Test</h1>
+<div id="status">Connecting...</div>
+<pre id="log"></pre>
+<script src="https://cdn.socket.io/4.7.5/socket.io.min.js"></script>
+<script>
+const log = document.getElementById('log');
+const status = document.getElementById('status');
+
+function append(msg) {
+  log.textContent += new Date().toISOString().slice(11,19) + ' ' + msg + '\n';
+}
+
+append('Creating socket to http://localhost:3001...');
+const s = io('http://localhost:3001', {
+  transports: ['polling', 'websocket']
+});
+
+s.on('connect', () => {
+  status.textContent = 'Connected! ID: ' + s.id;
+  status.style.color = 'green';
+  append('CONNECTED: ' + s.id);
+  
+  // List personas
+  s.emit('personas:list');
+  s.emit('conversation:list');
+});
+
+s.on('personas:list', (p) => {
+  append('Personas received: ' + JSON.stringify(p.map(x => x.name)));
+});
+
+s.on('conversation:list', (c) => {
+  append('Conversations: ' + JSON.stringify(c.map(x => x.title)));
+});
+
+s.on('disconnect', (reason) => {
+  status.textContent = 'Disconnected: ' + reason;
+  status.style.color = 'red';
+  append('DISCONNECTED: ' + reason);
+});
+
+s.on('connect_error', (err) => {
+  status.textContent = 'Error: ' + err.message;
+  status.style.color = 'red';
+  append('ERROR: ' + err.message);
+});
+</script>
+</body>
+</html>

@@ -3,8 +3,8 @@ import { PersonaSchema, UserMessagePayloadSchema, AgentTokenPayloadSchema } from
 
 describe('PersonaSchema', () => {
   it('accepts a valid persona with defaults', () => {
-    const p = PersonaSchema.parse({ id: 'nova', name: 'Nova', systemPrompt: 'hi' });
-    expect(p.model).toBe('llama3.1:8b');
+    const p = PersonaSchema.parse({ id: 'nova', name: 'Nova', model: 'qwen3.8:27b', systemPrompt: 'hi' });
+    expect(p.model).toBe('qwen3.8:27b');
     expect(p.enabled).toBe(true);
     expect(p.temperature).toBe(0.7);
   });

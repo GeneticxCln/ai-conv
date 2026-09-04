@@ -10,4 +10,9 @@ build
 *.db
 backend/data
 frontend/dist
+frontend/tests/.auth
+frontend/test-results
+frontend/playwright-report
+frontend/resources
+.freebuff/
 .docker
