@@ -17,9 +17,9 @@ Regenerate (burns the old key — all existing installs stop auto-updating):
 npx @tauri-apps/cli signer generate -w src-tauri/keys/aiconv.key --password "" --ci --force
 ```
 
-## 2. CI secrets (GitHub → Settings → Secrets and variables → Actions)
+## 2. CI variables (GitLab → Settings → CI/CD → Variables)
 
-| Secret | Value |
+| Variable | Value |
 | --- | --- |
 | `TAURI_SIGNING_PRIVATE_KEY` | Full contents of `src-tauri/keys/aiconv.key` |
 | `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` | *(empty — leave unset/empty string)* |
@@ -28,18 +28,21 @@ npx @tauri-apps/cli signer generate -w src-tauri/keys/aiconv.key --password "" -
 
 ```bash
 npm version patch          # bumps root + creates v0.x.y git tag
-git push --follow-tags     # .github/workflows/release.yml takes over
+git push --follow-tags     # .gitlab-ci.yml release:tauri job takes over
 ```
 
-The workflow builds the signed bundle on GitHub Actions and `tauri-action`
-creates the release with:
+The `release:tauri` job builds the signed bundle and publishes to GitLab:
 
 - `AI.Conv_0.x.y_amd64.{deb,rpm}` — installers
 - `ai-conv_0.x.y_amd64.AppImage` — portable build
 - `ai-conv_0.x.y_amd64.AppImage.tar.gz` + `.sig` — **updater artifacts**
 - `latest.json` — the manifest the running app polls
-  (endpoint: `https://github.com/<owner>/<repo>/releases/latest/download/latest.json`
-  — set the real `<owner>/<repo>` in `src-tauri/tauri.conf.json`).
+
+All artifacts are uploaded to the **generic package registry**
+(`packages/generic/ai-conv-desktop/<tag>/...`) and linked from the release.
+The updater polls the release permalink:
+`https://gitlab.com/GeneticxClm/ai-conv/-/releases/permalink/latest/downloads/latest.json`
+(configured in `src-tauri/tauri.conf.json`).
 
 ## 4. What the app does with it
 
