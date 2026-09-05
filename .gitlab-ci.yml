@@ -1,0 +1,164 @@
+# GitLab CI — ported 1:1 from .github/workflows/ci.yml (GitHub Actions).
+#
+# Job mapping:
+#   typecheck-and-lint -> lint          (types build + backend/frontend lint)
+#   test-backend       -> test:backend  (143 vitest suites)
+#   test-frontend      -> test:frontend (59 vitest suites)
+#   test-e2e           -> test:e2e      (Playwright against a real Ollama service)
+#   docker-build       -> docker:build  (backend + frontend images, compose config check)
+#
+# The repo is npm-workspaces based; every job installs once at the root and
+# runs workspace scripts. Node 20 matches the engines field and GH workflow.
+
+stages:
+  - build
+  - test
+  - e2e
+  - images
+
+variables:
+  GIT_SUBMODULE_STRATEGY: normal
+  NODE_OPTIONS: "--max-old-space-size=4096"
+
+default:
+  image: node:20-bookworm
+  before_script:
+    - npm ci --legacy-peer-deps
+    # Same as the GH workflow's "Generate JWT secret" step: tests and builds
+    # refuse to run with the default dev secret.
+    - export JWT_SECRET="$(node -e "process.stdout.write(require('crypto').randomBytes(32).toString('hex'))")"
+  cache:
+    # Keyed on the lockfile so a dependency bump invalidates the cache.
+    key:
+      files:
+        - package-lock.json
+    paths:
+      - .npm/
+
+.npm_cache: &npm_cache
+  cache:
+    key:
+      files:
+        - package-lock.json
+    paths:
+      - .npm/
+
+# ---------------------------------------------------------------------------
+# Stage: build
+# ---------------------------------------------------------------------------
+lint:
+  stage: build
+  <<: *npm_cache
+  script:
+    - npm run build --workspace=packages/types
+    - npm run build --workspace=backend
+    - npm run build --workspace=frontend
+    - npm run lint --workspace=backend
+    - npm run lint --workspace=frontend
+    - npm run lint --workspace=packages/types
+
+# ---------------------------------------------------------------------------
+# Stage: test
+# ---------------------------------------------------------------------------
+test:backend:
+  stage: test
+  <<: *npm_cache
+  script:
+    - npm run build --workspace=packages/types
+    - npm test --workspace=backend
+
+test:frontend:
+  stage: test
+  <<: *npm_cache
+  script:
+    - npm run build --workspace=packages/types
+    - npm test --workspace=frontend
+
+# ---------------------------------------------------------------------------
+# Stage: e2e — Playwright against a real Ollama service container.
+#
+# GitLab services cannot be `docker exec`ed, so models are pulled via Ollama's
+# HTTP API (POST /api/pull) instead of `ollama pull` in the service container.
+# Models match ci.yml exactly: qwen2.5:0.5b (smallest chat model, so streaming
+# E2E stays fast) + nomic-embed-text (so the Settings EMBEDDING badge test is
+# meaningful). The backend in the Playwright webServer talks to
+# http://ollama:11434 — "ollama" is the service hostname GitLab injects.
+# ---------------------------------------------------------------------------
+test:e2e:
+  stage: e2e
+  <<: *npm_cache
+  image: mcr.microsoft.com/playwright:v1.62.1-jammy
+  services:
+    - name: ollama/ollama:latest
+      alias: ollama
+      # Pull is done in before_script; give the server time to boot on entry.
+      command: ["serve"]
+  variables:
+    OLLAMA_HOST: http://ollama:11434
+    PLAYWRIGHT_BASE_URL: http://127.0.0.1:5173
+    DATABASE_PATH: /tmp/ai-conv-e2e.db
+    FF_NETWORK_PER_BUILD: 1
+  before_script:
+    # Node deps (root + frontend) — the Playwright image ships Node 20+ and
+    # the browsers, so no npx playwright install needed.
+    - npm ci --legacy-peer-deps
+    - export JWT_SECRET="$(node -e "process.stdout.write(require('crypto').randomBytes(32).toString('hex'))")"
+    # Wait for the Ollama service to answer, then pull models via HTTP API.
+    - |
+      for i in $(seq 1 30); do
+        if curl -fsS "$OLLAMA_HOST/api/tags" >/dev/null 2>&1; then break; fi
+        sleep 2
+      done
+      curl -fsS "$OLLAMA_HOST/api/tags"
+      echo "--- pulling chat model (matches docker-compose puller) ---"
+      curl -fsS -X POST "$OLLAMA_HOST/api/pull" -d '{"name":"qwen2.5:0.5b"}' | head -c 200 || true
+      echo
+      echo "--- pulling embedding model (for Settings badge E2E) ---"
+      curl -fsS -X POST "$OLLAMA_HOST/api/pull" -d '{"name":"nomic-embed-text"}' | head -c 200 || true
+      echo
+      echo "--- installed models ---"
+      curl -fsS "$OLLAMA_HOST/api/tags" | head -c 400
+  script:
+    - npm run test:e2e --workspace=frontend
+  # E2E is the slowest job; give it room on shared runners.
+  timeout: 45m
+
+# ---------------------------------------------------------------------------
+# Stage: images — same builds as ci.yml docker-build job.
+# ---------------------------------------------------------------------------
+docker:build:
+  stage: images
+  image: docker:27
+  before_script: []   # no npm needed
+  services:
+    - docker:27-dind
+  variables:
+    DOCKER_TLS_CERTDIR: "/certs"
+    IMAGE_BACKEND: "$CI_REGISTRY_IMAGE/backend:$CI_COMMIT_SHORT_SHA"
+    IMAGE_FRONTEND: "$CI_REGISTRY_IMAGE/frontend:$CI_COMMIT_SHORT_SHA"
+  script:
+    - echo "$CI_REGISTRY_PASSWORD" | docker login -u "$CI_REGISTRY_USER" --password-stdin "$CI_REGISTRY"
+    - docker build -f backend/Dockerfile -t "$IMAGE_BACKEND" .
+    - docker build
+        --build-arg VITE_WS_URL=http://localhost:3001
+        --build-arg VITE_API_URL=http://localhost:3001
+        -f frontend/Dockerfile
+        -t "$IMAGE_FRONTEND" .
+    - docker compose -f docker-compose.yml config --quiet
+    # Build-only validation on MRs/main; nothing is pushed anywhere.
+    - docker rmi "$IMAGE_BACKEND" "$IMAGE_FRONTEND"
+  rules:
+    # Docker build is slow; run it on main and MRs, skip for plain branch pushes.
+    - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
+    - if: '$CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH'
+
+# ---------------------------------------------------------------------------
+# Convenience: pipeline badge-friendly "all green" job.
+# ---------------------------------------------------------------------------
+pipeline-success:
+  stage: .post
+  script:
+    - echo "All GitLab CI checks passed."
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
+    - if: '$CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH'
