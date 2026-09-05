@@ -9,14 +9,29 @@ export default async function globalSetup(config: FullConfig): Promise<void> {
   const backendURL = process.env.PLAYWRIGHT_BACKEND_URL || 'http://127.0.0.1:3001';
   const socket = io(backendURL, {
     transports: ['websocket'],
-    reconnection: false,
-    timeout: 10_000,
+    // Retry with backoff: on shared CI runners the backend's first handshake
+    // can stall under load (two pipelines racing on one box flaked this with
+    // "Error: websocket error" 1s after boot). A single-shot connect kills
+    // the entire suite before any test runs.
+    reconnection: true,
+    reconnectionAttempts: 10,
+    reconnectionDelay: 1_000,
+    reconnectionDelayMax: 5_000,
+    timeout: 20_000,
   });
 
   try {
     await new Promise<void>((resolve, reject) => {
-      socket.once('connect', () => resolve());
-      socket.once('connect_error', reject);
+      // connect_error fires per attempt while reconnection is enabled —
+      // only a hard cap or a successful connect settles this promise.
+      const hardCap = setTimeout(
+        () => reject(new Error(`backend unreachable at ${backendURL} after 60s`)),
+        60_000,
+      );
+      socket.once('connect', () => {
+        clearTimeout(hardCap);
+        resolve();
+      });
     });
     const result = await socket.emitWithAck('user:create', { name: 'Playwright User', avatar: '🧪' }) as {
       ok?: boolean;

@@ -92,6 +92,11 @@ test:e2e:
   stage: e2e
   <<: *npm_cache
   image: mcr.microsoft.com/playwright:v1.62.1-jammy
+  # Serialize E2E across ALL pipelines (main + tags often push together):
+  # each run spawns two Vite dev servers, the backend, Chromium and an Ollama
+  # container — two concurrent runs starve the shared runner's CPU and the
+  # backend's websocket handshake stalls past global-setup's timeout.
+  resource_group: e2e-tests
   services:
     - name: ollama/ollama:latest
       alias: ollama
@@ -154,7 +159,9 @@ docker:build:
         --build-arg VITE_API_URL=http://localhost:3001
         -f frontend/Dockerfile
         -t "$IMAGE_FRONTEND" .
-    - docker compose -f docker-compose.yml config --quiet
+    # compose config validates interpolation; JWT_SECRET is declared
+    # required in docker-compose.yml — a placeholder is enough for validation.
+    - JWT_SECRET=docker-compose-config-placeholder docker compose -f docker-compose.yml config --quiet
     # Build-only validation on MRs/main; nothing is pushed anywhere.
     - docker rmi "$IMAGE_BACKEND" "$IMAGE_FRONTEND"
   rules:
