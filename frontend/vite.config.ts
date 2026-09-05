@@ -16,6 +16,15 @@ export default defineConfig(({ command }) => ({
     drop: command === 'build' ? ['console'] : [],
   },
   plugins: [react()],
+  build: {
+    // outDir is env-driven. The packaged Electron app lives inside
+    // frontend/dist (electron-builder output), so every other consumer must
+    // emit elsewhere: E2E → dist-e2e, Tauri → dist-tauri (tauri.conf.json
+    // frontendDist). `vite build` can then never empty dist/ and delete the
+    // packaged app.
+    outDir: process.env.VITE_OUT_DIR || 'dist',
+    emptyOutDir: true,
+  },
   // Relative asset URLs so the packaged Electron app can load dist/ via file://
   // (absolute /assets paths break under the file protocol).
   base: './',

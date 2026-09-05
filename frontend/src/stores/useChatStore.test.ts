@@ -103,4 +103,20 @@ describe('useChatStore reducers', () => {
     useChatStore.getState().stopStreaming('m9');
     expect(useChatStore.getState().streamingMessages['m9']).toBeUndefined();
   });
+
+  it('setAwaitingFirstToken tracks per conversation and clears independently', () => {
+    useChatStore.getState().setAwaitingFirstToken('conv-a', true);
+    useChatStore.getState().setAwaitingFirstToken('conv-b', true);
+    expect(useChatStore.getState().awaitingFirstToken['conv-a']).toBe(true);
+    expect(useChatStore.getState().awaitingFirstToken['conv-b']).toBe(true);
+
+    // First token arrives for conv-a only.
+    useChatStore.getState().setAwaitingFirstToken('conv-a', false);
+    expect(useChatStore.getState().awaitingFirstToken['conv-a']).toBeUndefined();
+    expect(useChatStore.getState().awaitingFirstToken['conv-b']).toBe(true);
+
+    // Idempotent clear.
+    useChatStore.getState().setAwaitingFirstToken('conv-a', false);
+    expect(useChatStore.getState().awaitingFirstToken['conv-a']).toBeUndefined();
+  });
 });

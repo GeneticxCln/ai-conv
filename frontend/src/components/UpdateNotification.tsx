@@ -1,131 +1,117 @@
-import { useAutoUpdate } from '../hooks/useAutoUpdate';
-import { Download, RefreshCw, CheckCircle, AlertCircle, X } from 'lucide-react';
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
+import { Download, RefreshCw, RotateCcw, X } from 'lucide-react';
+import {
+  checkForAppUpdate,
+  downloadAndInstallAppUpdate,
+  relaunchApp,
+  type UpdateProgress,
+} from '../lib/updater';
 
+/**
+ * Auto-update toast for the Tauri shell (electron-updater replacement).
+ * Auto-checks on mount; silent when up-to-date, offline, or outside Tauri.
+ */
 export function UpdateNotification() {
-  const { status, updateInfo, progress, error, installUpdate, checkForUpdates } = useAutoUpdate();
   const [dismissed, setDismissed] = useState(false);
+  const [checking, setChecking] = useState(false);
+  const [available, setAvailable] = useState<{ version: string; notes?: string } | null>(null);
+  const [progress, setProgress] = useState<UpdateProgress | null>(null);
+  const [downloaded, setDownloaded] = useState(false);
+  const [error, setError] = useState<string | null>(null);
 
-  if (dismissed || status === 'idle') return null;
+  useEffect(() => {
+    let cancelled = false;
+    // Small delay so launch I/O (backend boot, model queries) isn't contended.
+    const t = setTimeout(async () => {
+      setChecking(true);
+      const update = await checkForAppUpdate();
+      if (!cancelled) setChecking(false);
+      if (update && !cancelled) setAvailable(update);
+    }, 4000);
+    return () => {
+      cancelled = true;
+      clearTimeout(t);
+    };
+  }, []);
+
+  const install = async () => {
+    setError(null);
+    setProgress({ chunkLength: 0, received: 0 });
+    try {
+      await downloadAndInstallAppUpdate((p) => setProgress(p));
+      setDownloaded(true);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    }
+  };
+
+  if (dismissed) return null;
+
+  const pct =
+    progress && progress.total
+      ? Math.min(100, Math.round((progress.received / progress.total) * 100))
+      : null;
 
   return (
     <div className="fixed bottom-4 right-4 z-50 max-w-sm">
       <div className="bg-gray-800 border border-gray-700 rounded-lg shadow-2xl p-4">
-        {/* Checking */}
-        {status === 'checking' && (
+        {checking && (
           <div className="flex items-center gap-3">
             <RefreshCw className="w-5 h-5 text-blue-400 animate-spin" />
-            <div>
-              <p className="text-sm font-medium text-white">Checking for updates...</p>
-              <p className="text-xs text-gray-400">This may take a moment</p>
-            </div>
-            <button
-              onClick={() => setDismissed(true)}
-              className="ml-auto text-gray-400 hover:text-white"
-            >
+            <p className="text-sm text-white">Checking for updates…</p>
+            <button onClick={() => setDismissed(true)} className="ml-auto text-gray-400 hover:text-white">
               <X className="w-4 h-4" />
             </button>
           </div>
         )}
 
-        {/* Available / Downloading */}
-        {status === 'available' && (
-          <div className="flex items-center gap-3">
-            <Download className="w-5 h-5 text-blue-400" />
-            <div>
-              <p className="text-sm font-medium text-white">
-                Update available: v{updateInfo?.version}
-              </p>
-              <p className="text-xs text-gray-400">Downloading...</p>
-            </div>
-          </div>
-        )}
-
-        {status === 'downloading' && (
+        {available && !downloaded && !error && (
           <div className="space-y-2">
             <div className="flex items-center gap-3">
-              <Download className="w-5 h-5 text-blue-400 animate-pulse" />
-              <div className="flex-1">
-                <p className="text-sm font-medium text-white">
-                  Downloading v{updateInfo?.version}
-                </p>
-                {progress && (
-                  <p className="text-xs text-gray-400">
-                    {Math.round(progress.percent)}% • {(progress.bytesPerSecond / 1024 / 1024).toFixed(1)} MB/s
-                  </p>
-                )}
-              </div>
-              <button
-                onClick={() => setDismissed(true)}
-                className="text-gray-400 hover:text-white"
-              >
+              <Download className="w-5 h-5 text-blue-400" />
+              <p className="text-sm font-medium text-white">Update available: v{available.version}</p>
+              <button onClick={() => setDismissed(true)} className="ml-auto text-gray-400 hover:text-white">
                 <X className="w-4 h-4" />
               </button>
             </div>
-            {progress && (
-              <div className="w-full bg-gray-700 rounded-full h-1.5">
-                <div
-                  className="bg-blue-500 h-1.5 rounded-full transition-all duration-300"
-                  style={{ width: `${Math.min(progress.percent, 100)}%` }}
-                />
+            {pct !== null ? (
+              <div>
+                <div className="h-1.5 bg-gray-700 rounded overflow-hidden">
+                  <div className="h-full bg-blue-500 transition-all" style={{ width: `${pct}%` }} />
+                </div>
+                <p className="text-xs text-gray-400 mt-1">{pct}%</p>
               </div>
+            ) : (
+              <button
+                onClick={install}
+                className="w-full py-1.5 bg-blue-600 hover:bg-blue-500 text-white text-sm rounded flex items-center justify-center gap-2"
+              >
+                <Download className="w-4 h-4" /> Download &amp; install
+              </button>
             )}
           </div>
         )}
 
-        {/* Downloaded — ready to install */}
-        {status === 'downloaded' && (
-          <div className="space-y-3">
-            <div className="flex items-center gap-3">
-              <CheckCircle className="w-5 h-5 text-green-400" />
-              <div>
-                <p className="text-sm font-medium text-white">
-                  Update ready: v{updateInfo?.version}
-                </p>
-                <p className="text-xs text-gray-400">Restart to apply the update</p>
-              </div>
-            </div>
-            <div className="flex gap-2">
-              <button
-                onClick={installUpdate}
-                className="flex-1 px-3 py-1.5 bg-blue-600 hover:bg-blue-500 text-white text-sm rounded-md font-medium transition-colors"
-              >
-                Restart &amp; Update
-              </button>
-              <button
-                onClick={() => setDismissed(true)}
-                className="px-3 py-1.5 bg-gray-700 hover:bg-gray-600 text-gray-300 text-sm rounded-md transition-colors"
-              >
-                Later
-              </button>
-            </div>
+        {downloaded && (
+          <div className="flex items-center gap-3">
+            <RotateCcw className="w-5 h-5 text-green-400" />
+            <p className="text-sm text-white">Update installed — restart to apply</p>
+            <button
+              onClick={() => relaunchApp()}
+              className="ml-auto px-3 py-1 bg-green-600 hover:bg-green-500 text-white text-sm rounded"
+            >
+              Restart
+            </button>
           </div>
         )}
 
-        {/* Error */}
-        {status === 'error' && (
-          <div className="space-y-3">
-            <div className="flex items-center gap-3">
-              <AlertCircle className="w-5 h-5 text-amber-400" />
-              <div>
-                <p className="text-sm font-medium text-white">Update check failed</p>
-                <p className="text-xs text-gray-400">{error}</p>
-              </div>
-            </div>
-            <div className="flex gap-2">
-              <button
-                onClick={checkForUpdates}
-                className="px-3 py-1.5 bg-gray-700 hover:bg-gray-600 text-white text-sm rounded-md transition-colors"
-              >
-                Retry
-              </button>
-              <button
-                onClick={() => setDismissed(true)}
-                className="px-3 py-1.5 bg-gray-700 hover:bg-gray-600 text-gray-300 text-sm rounded-md transition-colors"
-              >
-                Dismiss
-              </button>
-            </div>
+        {error && (
+          <div className="flex items-center gap-3">
+            <X className="w-5 h-5 text-red-400" />
+            <p className="text-sm text-white">Update failed: {error}</p>
+            <button onClick={() => setDismissed(true)} className="ml-auto text-gray-400 hover:text-white">
+              <X className="w-4 h-4" />
+            </button>
           </div>
         )}
       </div>

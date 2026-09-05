@@ -1,6 +1,8 @@
 import { test, expect, Page } from '@playwright/test';
 import { readFile } from 'node:fs/promises';
 import path from 'node:path';
+import { modelFitsInVram } from '../../src/lib/vram';
+import { FAKE_GPU } from '../fake-gpu';
 
 test.describe('AI Conv core flows', () => {
   // global-setup picks the fastest installed chat model and writes its name to
@@ -94,6 +96,7 @@ test.describe('AI Conv core flows', () => {
       capabilities: (row.getAttribute('data-model-capabilities') || '').split(',').filter(Boolean),
       hasFastestBadge: Boolean(row.querySelector('[data-testid="fastest-model-badge"]')),
       hasEmbeddingBadge: Boolean(row.querySelector('[data-testid="embedding-model-badge"]')),
+      hasTooBigBadge: Boolean(row.querySelector('[data-testid="too-big-for-vram-badge"]')),
     })));
 
     const parseParameterSize = (value: string): number => {
@@ -124,6 +127,22 @@ test.describe('AI Conv core flows', () => {
     expect(installedModels.filter((model) => model.hasEmbeddingBadge).map((model) => model.name))
       .toEqual(embeddingModels.map((model) => model.name));
 
+    // VRAM badge: computed by modelFitsInVram(model, fakeGpu) where the fake
+    // GPU's totalMiB=1350 comes from tests/fake-gpu.ts (shared with the
+    // backend webServer env). modelFitsInVram adds a 1 GiB runtime overhead,
+    // so a model must be ≤ ~322 MiB to fit — the embedding model fits, every
+    // bigger chat model gets the badge. Importing the real helper asserts the
+    // documented rule instead of a copy of it.
+    const fakeGpu = { available: true, totalMiB: FAKE_GPU.totalMiB, usedMiB: FAKE_GPU.usedMiB, name: FAKE_GPU.name };
+    const expectedTooBig = installedModels
+      .filter((model) => model.fileSize > 0 && !modelFitsInVram(
+        { name: model.name, size: model.fileSize },
+        fakeGpu,
+      ))
+      .map((model) => model.name);
+    expect(installedModels.filter((model) => model.hasTooBigBadge).map((model) => model.name))
+      .toEqual(expectedTooBig);
+    expect(expectedTooBig.length).toBeGreaterThan(0); // at least one model must exceed 1350 MiB
     await page.getByRole('tab', { name: 'Data' }).click();
     await expect(page.getByText('Export All Data (JSON)')).toBeVisible();
     await page.getByRole('tab', { name: 'Advanced' }).click();

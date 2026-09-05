@@ -40,6 +40,7 @@ export function Chat() {
 
     clearConversations,
     getModelsFull: getModelsFullFn,
+    getGpuInfo,
     pullModel,
     listUsers,
     createUser,
@@ -60,6 +61,9 @@ export function Chat() {
   const [leftDrawer, setLeftDrawer] = useState(false);
   const [personaModal, setPersonaModal] = useState<{ open: boolean; editing: Persona | null }>({ open: false, editing: null });
   const streamingCount = useChatStore((s) => Object.keys(s.streamingMessages).length);
+  const awaitingFirstToken = useChatStore((s) =>
+    currentConversationId ? Boolean(s.awaitingFirstToken[currentConversationId]) : false
+  );
   const currentConv = conversations.find((c) => c.id === currentConversationId);
 
   const scrollContainerRef = useRef<HTMLDivElement>(null);
@@ -113,6 +117,9 @@ export function Chat() {
     return () => {
       if (currentConversationId) {
         leaveConversation(currentConversationId);
+        // Don't leave a stale "loading model" indicator behind for a
+        // conversation the user has navigated away from.
+        useChatStore.getState().setAwaitingFirstToken(currentConversationId, false);
       }
     };
   }, [currentConversationId, joinConversation, leaveConversation, stopStreaming]);
@@ -348,6 +355,22 @@ export function Chat() {
               </>
             )}
 
+            {awaitingFirstToken && (
+              <div className="px-4 pb-1 flex items-center justify-center gap-2 text-xs text-gray-500 dark:text-gray-400">
+                <span className="inline-block w-3 h-3 border-2 border-gray-300 dark:border-gray-600 border-t-blue-500 rounded-full animate-spin" aria-hidden="true" />
+                <span>
+                  Loading model… first response can take a while on larger models.
+                </span>
+                {currentConversationId && (
+                  <button
+                    onClick={() => stopGeneration(currentConversationId)}
+                    className="ml-2 px-3 py-0.5 rounded-full bg-red-100 dark:bg-red-900/40 text-red-600 dark:text-red-300 hover:bg-red-200 dark:hover:bg-red-900/60"
+                  >
+                    Cancel
+                  </button>
+                )}
+              </div>
+            )}
             {streamingCount > 0 && (
               <div className="px-4 pb-1 flex justify-center">
                 <button
@@ -388,6 +411,7 @@ export function Chat() {
         open={personaModal.open}
         editing={personaModal.editing}
         getModels={getModelsFullFn}
+        getGpuInfo={getGpuInfo}
         pullModel={pullModel}
         onClose={() => setPersonaModal({ open: false, editing: null })}
         onSave={(data) => {
@@ -402,6 +426,7 @@ export function Chat() {
         onClose={() => setSettingsOpen(false)}
         onClearConversations={clearConversations}
         getModels={getModelsFullFn}
+        getGpuInfo={getGpuInfo}
         pullModel={pullModel}
         exportData={exportData}
         importData={importData}

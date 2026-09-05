@@ -15,8 +15,8 @@ function App() {
     <div className="h-screen w-full">
       <ErrorBoundary>
         <Chat />
+        <UpdateNotification />
       </ErrorBoundary>
-      <UpdateNotification />
     </div>
   );
 }

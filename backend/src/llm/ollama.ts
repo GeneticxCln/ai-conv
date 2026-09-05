@@ -153,11 +153,19 @@ export async function* streamChat(
     });
     console.log('[streamChat] Got response, iterating chunks...');
 
+    const abortErr = (): Error => {
+      const e = new Error('Aborted');
+      e.name = 'AbortError';
+      return e;
+    };
+
+    // Stop DURING model load: the ollama client only resolves chat() after
+    // the server has loaded the model, which can take minutes for large
+    // models. If the user hit Stop in that window, cancel the underlying
+    // HTTP request immediately instead of waiting for the first chunk.
     if (signal?.aborted) {
-      response.abort();
-      const abortErr = new Error('Aborted');
-      abortErr.name = 'AbortError';
-      throw abortErr;
+      try { (response as { abort?: () => void }).abort?.(); } catch { /* ignore */ }
+      throw abortErr();
     }
 
     const onAbort = () => {

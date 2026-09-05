@@ -2,13 +2,15 @@ import { useState, useEffect } from 'react';
 import { X, Moon, Sun, Trash2, RefreshCw, Download, Upload, Database, Cpu, HardDrive, Settings, AlertTriangle } from 'lucide-react';
 import { useChatStore } from '../stores/useChatStore';
 import { InstalledModel, sortModelsBySpeed, isEmbeddingModel, pickFastestChatModel } from '../lib/modelPicker';
-import { FastestBadge, EmbeddingBadge } from './ModelBadges';
+import { GpuInfo, modelFitsInVram } from '../lib/vram';
+import { FastestBadge, EmbeddingBadge, TooBigForVramBadge } from './ModelBadges';
 
 interface SettingsModalProps {
   open: boolean;
   onClose: () => void;
   onClearConversations: () => void;
   getModels: () => Promise<InstalledModel[]>;
+  getGpuInfo: () => Promise<GpuInfo>;
   pullModel: (name: string) => void;
   exportData: () => Promise<Record<string, unknown> | null>;
   importData: (file: File) => Promise<{ ok: boolean; error?: string }>;
@@ -16,7 +18,7 @@ interface SettingsModalProps {
 
 type Tab = 'general' | 'models' | 'data' | 'advanced';
 
-export function SettingsModal({ open, onClose, onClearConversations, getModels, pullModel, exportData, importData }: SettingsModalProps) {
+export function SettingsModal({ open, onClose, onClearConversations, getModels, getGpuInfo, pullModel, exportData, importData }: SettingsModalProps) {
   const theme = useChatStore((s) => s.theme);
   const setTheme = useChatStore((s) => s.setTheme);
   const agentChat = useChatStore((s) => s.agentChat);
@@ -27,6 +29,7 @@ export function SettingsModal({ open, onClose, onClearConversations, getModels, 
   const [confirmClear, setConfirmClear] = useState(false);
 
   const [models, setModels] = useState<InstalledModel[]>([]);
+  const [gpu, setGpu] = useState<GpuInfo | null>(null);
   const [newModel, setNewModel] = useState('');
   const [activeTab, setActiveTab] = useState<Tab>('general');
   const [importFile, setImportFile] = useState<File | null>(null);
@@ -43,7 +46,11 @@ export function SettingsModal({ open, onClose, onClearConversations, getModels, 
     bytes >= 1e9 ? `${(bytes / 1e9).toFixed(1)} GB` : `${Math.round(bytes / 1e6)} MB`;
 
   const checkHealth = () => {
-    const apiBase = import.meta.env.VITE_API_URL || 'http://localhost:3001';
+    // Same-origin first (the desktop shells load the app FROM the backend, so
+    // a relative URL is both correct and immune to localhost→::1 IPv6
+    // resolution failures inside WebKitGTK). VITE_API_URL remains a dev/
+    // browser override.
+    const apiBase = import.meta.env.VITE_API_URL || window.location.origin;
     fetch(`${apiBase}/health`)
       .then((r) => (r && r.ok ? r.json() : Promise.reject(new Error('health check failed'))))
       .then((d: unknown) => {
@@ -61,10 +68,17 @@ export function SettingsModal({ open, onClose, onClearConversations, getModels, 
     getModels().then(setModels);
   };
 
+  // Best-effort GPU report for the per-model VRAM tags. A null keeps the
+  // badges silent on machines without a queryable GPU.
+  const refreshGpu = () => {
+    getGpuInfo().then(setGpu).catch(() => setGpu(null));
+  };
+
   useEffect(() => {
     if (open) {
       checkHealth();
       refreshModels();
+      refreshGpu();
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps -- run once per open
   }, [open]);
@@ -272,6 +286,7 @@ export function SettingsModal({ open, onClose, onClearConversations, getModels, 
                   return sorted.map((m) => {
                     const p = pullProgress[m.name];
                     const embedding = isEmbeddingModel(m);
+                    const tooBig = gpu && !modelFitsInVram(m, gpu);
                     return (
                       <div
                         key={m.name}
@@ -286,6 +301,7 @@ export function SettingsModal({ open, onClose, onClearConversations, getModels, 
                           {m.name}
                           {fastest && m.name === fastest.name && <FastestBadge />}
                           {embedding && <EmbeddingBadge />}
+                          {tooBig && <TooBigForVramBadge />}
                         </span>
                       <span className="flex items-center gap-2 shrink-0">
                         {m.parameterSize && <span className="text-xs text-gray-400">{m.parameterSize}</span>}

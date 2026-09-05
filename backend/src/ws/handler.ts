@@ -36,6 +36,7 @@ import {
 } from '../storage/db.js';
 import { ConversationImportSchema, UserMessagePayloadSchema } from '@ai-conv/types';
 import { ollama, abortStreamsForConversation, validateModel } from '../llm/ollama.js';
+import { getGpuInfo } from '../llm/gpuInfo.js';
 import { createToken, createUserWithToken, getUserFromToken, verifyToken } from '../auth.js';
 import {
   checkPullRateLimit,
@@ -51,6 +52,17 @@ declare module 'socket.io' {
   interface Socket {
     user?: SocketUser;
   }
+}
+
+/**
+ * A loopback client is the desktop app's own bridge (or a browser on the
+ * same machine). Only loopback connections may bootstrap/recover local
+ * profiles anonymously — remote clients must always authenticate, so a
+ * stale token can never lock the desktop user out of their own data.
+ */
+function isLoopbackClient(socket: Socket): boolean {
+  const address = socket.handshake.address || '';
+  return address === '127.0.0.1' || address === '::1' || address === '::ffff:127.0.0.1';
 }
 
 const userRoom = (userId: string) => `user:${userId}`;
@@ -184,6 +196,20 @@ export function setupSocketHandler(io: Server, registry: AgentRegistry) {
       ack?.(getUsers().map(publicUser));
     });
 
+    // Recovery path: a loopback client whose stored token went stale must be
+    // able to see the existing profiles so it can select one and get a fresh
+    // token. Remote clients are REJECTED here — leaking profile names to the
+    // whole LAN would be a real vulnerability, not a convenience.
+    socket.on('users:list:bootstrap', (ack?: Ack) => {
+      if (!socket.user && !isLoopbackClient(socket)) {
+        emitAuthError(socket, ack);
+        return;
+      }
+      // Authenticated callers and anonymous loopback recovery alike get the
+      // profile list (names/ids only — publicUser strips everything else).
+      ack?.(getUsers().map(publicUser));
+    });
+
     socket.on(
       'user:create',
       async (
@@ -191,9 +217,11 @@ export function setupSocketHandler(io: Server, registry: AgentRegistry) {
         ack?: Ack,
       ) => {
         // Anonymous profile creation is a one-time bootstrap operation.
-        // Once a profile exists, callers must already hold a valid token;
-        // authenticated users may still create another local profile.
-        if (!socket.user && getUsers().length > 0) {
+        // Once a profile exists, callers must already hold a valid token —
+        // EXCEPT loopback clients (the desktop app's own bridge), which may
+        // recover access when their stored token went stale (e.g. the JWT
+        // secret was regenerated). Remote clients stay locked down.
+        if (!socket.user && getUsers().length > 0 && !isLoopbackClient(socket)) {
           emitAuthError(socket, ack, 'Authentication required to create another profile');
           return;
         }
@@ -223,9 +251,15 @@ export function setupSocketHandler(io: Server, registry: AgentRegistry) {
 
     // Local profile switching is explicit: the server issues a fresh token
     // for the selected profile and immediately binds the socket to that user.
+    // Loopback clients may switch profiles WITHOUT an existing token — that is
+    // the recovery path when a stored token went stale (regenerated JWT
+    // secret, expired token). Remote clients must authenticate first.
     socket.on('user:select', (id: string, ack?: Ack) => {
-      const current = requireUser(socket, ack);
-      if (!current) return;
+      const isLoopback = isLoopbackClient(socket);
+      if (!socket.user && !isLoopback) {
+        emitAuthError(socket, ack);
+        return;
+      }
       const selected = getUser(String(id));
       if (!selected) {
         emitAuthError(socket, ack, 'User not found');
@@ -493,8 +527,15 @@ export function setupSocketHandler(io: Server, registry: AgentRegistry) {
       ack?.({ ok: true });
     });
 
+    // Model listing is a read-only query about the local Ollama install.
+    // Authenticated users AND loopback clients (the desktop shell's own
+    // webview, anonymous during first-launch/profile-pick) may list models —
+    // remote clients still cannot.
     socket.on('models:list', async (ack?: Ack<string[]>) => {
-      if (!requireUser(socket, ack)) return;
+      if (!socket.user && !isLoopbackClient(socket)) {
+        requireUser(socket, ack);
+        return;
+      }
       try {
         const { models } = await ollama.list();
         ack?.(models.map((model) => model.name));
@@ -510,7 +551,10 @@ export function setupSocketHandler(io: Server, registry: AgentRegistry) {
     socket.on(
       'models:list:full',
       async (ack?: Ack<Array<{ name: string; size: number; parameterSize?: string; capabilities?: string[] }>>) => {
-        if (!requireUser(socket, ack)) return;
+        if (!socket.user && !isLoopbackClient(socket)) {
+          requireUser(socket, ack);
+          return;
+        }
         try {
           const { models } = await ollama.list();
           ack?.(models.map((model) => ({
@@ -524,6 +568,18 @@ export function setupSocketHandler(io: Server, registry: AgentRegistry) {
         }
       },
     );
+
+    // GPU memory report so the UI can warn when a persona's model is larger
+    // than VRAM (partial CPU offload → extremely slow responses). Best-effort:
+    // acks { available: false } on machines without nvidia-smi.
+    socket.on('system:gpu', async (ack?: Ack) => {
+      if (!requireUser(socket, ack)) return;
+      try {
+        ack?.(await getGpuInfo());
+      } catch {
+        ack?.({ available: false });
+      }
+    });
 
     socket.on('model:pull', (modelName: string, ack?: Ack) => {
       if (!requireUser(socket, ack)) return;

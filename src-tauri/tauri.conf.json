@@ -1,0 +1,34 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "AI Conv",
+  "version": "0.1.0",
+  "identifier": "com.aiconv.app",
+  "build": {
+    "beforeDevCommand": "",
+    "devUrl": "http://localhost:5173",
+    "beforeBuildCommand": "",
+    "frontendDist": "../frontend/dist-tauri"
+  },
+  "app": {
+    "windows": [],
+    "security": {
+      "csp": null
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": ["deb", "appimage", "rpm"],
+    "icon": ["icons/icon.png"],
+    "resources": ["resources/backend", "resources/frontend-dist"],
+    "externalBin": ["binaries/ai-conv-backend"],
+    "createUpdaterArtifacts": true
+  },
+  "plugins": {
+    "updater": {
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IEJFODhCRDI3QjZCMkREQTQKUldTazNiSzJKNzJJdmlPNmh3OTF4cFhOQUc1dHh6VjZpalpVZmRQUFYzMmFsVzd4ZDBoT2lzNlQK",
+      "endpoints": [
+        "https://github.com/YOUR_GH_USER/ai-conv/releases/latest/download/latest.json"
+      ]
+    }
+  }
+}

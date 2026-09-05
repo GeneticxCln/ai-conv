@@ -2,12 +2,14 @@ import { useState, useEffect, useCallback } from 'react';
 import { X, Download } from 'lucide-react';
 import { Persona } from '@ai-conv/types';
 import { InstalledModel, sortModelsBySpeed, isEmbeddingModel, pickFastestChatModel } from '../lib/modelPicker';
+import { vramWarning } from '../lib/vram';
 import { FastestBadge, EmbeddingBadge } from './ModelBadges';
 
 interface PersonaModalProps {
   open: boolean;
   editing: Persona | null;
   getModels: () => Promise<InstalledModel[]>;
+  getGpuInfo: () => Promise<{ available: boolean; name?: string; totalMiB?: number; usedMiB?: number }>;
   pullModel: (modelName: string) => void;
   onClose: () => void;
   onSave: (data: Partial<Persona>) => void;
@@ -16,7 +18,7 @@ interface PersonaModalProps {
 
 const AVATARS = ['🤖', '😎', '🧠', '🎭', '🌟', '🎯', '🎨', '📚', '🎵', '💪', '🍳', '🌍'];
 
-export function PersonaModal({ open, editing, getModels, pullModel, onClose, onSave, onDelete }: PersonaModalProps) {
+export function PersonaModal({ open, editing, getModels, getGpuInfo, pullModel, onClose, onSave, onDelete }: PersonaModalProps) {
   // State initializes from `editing` per mount; PersonaSidebar remounts via `key`.
   const [name, setName] = useState(editing?.name || '');
   const [avatar, setAvatar] = useState(editing?.avatar || '🤖');
@@ -25,6 +27,7 @@ export function PersonaModal({ open, editing, getModels, pullModel, onClose, onS
   const [temperature, setTemperature] = useState(editing?.temperature ?? 0.7);
   const [enabledTools, setEnabledTools] = useState(editing?.enabledTools ?? false);
   const [models, setModels] = useState<InstalledModel[]>([]);
+  const [gpu, setGpu] = useState<{ available: boolean; name?: string; totalMiB?: number; usedMiB?: number } | null>(null);
   const [model, setModel] = useState(editing?.model || '');
   const [modelError, setModelError] = useState<string | null>(null);
   const [availableModels, setAvailableModels] = useState<string[]>([]);
@@ -56,6 +59,8 @@ export function PersonaModal({ open, editing, getModels, pullModel, onClose, onS
         setModels(list);
         setModel((cur) => (cur && list.some((m) => m.name === cur) ? cur : list[0]?.name || ''));
       });
+      // Best-effort; null on failure keeps the VRAM warning silent.
+      getGpuInfo().then(setGpu).catch(() => setGpu(null));
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps -- fetch models once per open
   }, [open, getModels]);
@@ -159,6 +164,7 @@ export function PersonaModal({ open, editing, getModels, pullModel, onClose, onS
                   const fastest = pickFastestChatModel(models);
                   const sorted = sortModelsBySpeed(models);
                   const f = sorted.find((m) => m.name === model);
+                  const warn = vramWarning(f, gpu);
                   return (
                     <div className="mt-1.5 flex items-start gap-1.5 flex-wrap text-xs">
                       {fastest && (
@@ -170,6 +176,18 @@ export function PersonaModal({ open, editing, getModels, pullModel, onClose, onS
                         <span className="flex items-center gap-1.5">
                           <EmbeddingBadge />
                           <span className="text-xs text-gray-400">cannot chat</span>
+                        </span>
+                      )}
+                      {warn && (
+                        <span
+                          className={`w-full flex items-start gap-1.5 rounded px-2 py-1.5 ${
+                            warn.level === 'error'
+                              ? 'bg-red-50 dark:bg-red-900/20 text-red-600 dark:text-red-400'
+                              : 'bg-amber-50 dark:bg-amber-900/20 text-amber-600 dark:text-amber-400'
+                          }`}
+                        >
+                          <span>⚠</span>
+                          <span>{warn.message}</span>
                         </span>
                       )}
                     </div>

@@ -1,0 +1,29 @@
+[package]
+name = "ai-conv"
+version = "0.1.0"
+description = "AI Conv — Multi-Persona AI Messenger (local-first, Ollama-powered)"
+authors = ["AI Conv Team"]
+edition = "2021"
+rust-version = "1.77"
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2.11", features = ["tray-icon", "image-png"] }
+tauri-plugin-shell = "2.3"
+tauri-plugin-single-instance = "2.4"
+tauri-plugin-opener = "2"
+tauri-plugin-updater = "2"
+tauri-plugin-process = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+# Open external links in the system browser (window.open handler).
+open = "5"
+
+[profile.release]
+codegen-units = 1
+lto = true
+opt-level = "s"
+panic = "abort"
+strip = true

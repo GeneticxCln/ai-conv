@@ -12,10 +12,11 @@ interface PersonaSidebarProps {
   onUpdate: (id: string, patch: Partial<Persona>) => void;
   onDelete: (id: string) => void;
   getModels: () => Promise<InstalledModel[]>;
+  getGpuInfo: () => Promise<{ available: boolean; name?: string; totalMiB?: number; usedMiB?: number }>;
   pullModel: (modelName: string) => void;
 }
 
-export function PersonaSidebar({ agents, onToggle, onCreate, onUpdate, onDelete, getModels, pullModel }: PersonaSidebarProps) {
+export function PersonaSidebar({ agents, onToggle, onCreate, onUpdate, onDelete, getModels, getGpuInfo, pullModel }: PersonaSidebarProps) {
   const [modalOpen, setModalOpen] = useState(false);
   const [editing, setEditing] = useState<Persona | null>(null);
 
@@ -73,6 +74,7 @@ export function PersonaSidebar({ agents, onToggle, onCreate, onUpdate, onDelete,
         open={modalOpen}
         editing={editing}
         getModels={getModels}
+        getGpuInfo={getGpuInfo}
         pullModel={pullModel}
         onClose={() => setModalOpen(false)}
         onSave={(data) => {

@@ -1,0 +1,17 @@
+{
+  "name": "ai-conv-sidecar",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Self-contained backend sidecar launcher for the Tauri shell (packaged with @yao-pkg/pkg)",
+  "bin": "launcher.cjs",
+  "pkg": {
+    "assets": [],
+    "outputPath": "build"
+  },
+  "scripts": {
+    "build": "node build.js"
+  },
+  "devDependencies": {
+    "@yao-pkg/pkg": "^6.7.0"
+  }
+}

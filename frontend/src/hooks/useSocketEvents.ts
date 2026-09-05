@@ -27,6 +27,7 @@ export function useSocketEvents({ onEvent, emitWithAck, connected, usingBridge, 
     stopStreaming,
     setPullProgress,
     setCurrentUser,
+    setAwaitingFirstToken,
   } = useChatStore();
 
   useEffect(() => {
@@ -71,6 +72,8 @@ export function useSocketEvents({ onEvent, emitWithAck, connected, usingBridge, 
     }));
 
     unsubs.push(onEvent('agent:token', (payload: AgentTokenPayload) => {
+      // First token arrived — model finished loading, stop the indicator.
+      setAwaitingFirstToken(payload.conversationId, false);
       const current = useChatStore.getState().messages[payload.conversationId] || [];
       setMessages(payload.conversationId, applyAgentToken(current, payload));
       if (payload.isDone) stopStreaming(payload.messageId);
@@ -78,6 +81,7 @@ export function useSocketEvents({ onEvent, emitWithAck, connected, usingBridge, 
     }));
 
     unsubs.push(onEvent('agent:done', (payload: AgentDonePayload) => {
+      setAwaitingFirstToken(payload.conversationId, false);
       stopStreaming(payload.messageId);
       updateMessage(payload.conversationId, payload.messageId, {
         content: payload.fullContent,
@@ -86,6 +90,7 @@ export function useSocketEvents({ onEvent, emitWithAck, connected, usingBridge, 
     }));
 
     unsubs.push(onEvent('agent:error', (payload: AgentErrorPayload) => {
+      setAwaitingFirstToken(payload.conversationId, false);
       if (payload.conversationId === currentConversationId) {
         console.error(`Agent error (${payload.agentName}):`, payload.error);
       }
@@ -111,6 +116,7 @@ export function useSocketEvents({ onEvent, emitWithAck, connected, usingBridge, 
       addMessage(message.conversationId, message);
     }));
     unsubs.push(onEvent('generation:stopped', (conversationId: string) => {
+      setAwaitingFirstToken(conversationId, false);
       stopStreaming('');
       const msgs = useChatStore.getState().messages[conversationId] || [];
       if (msgs.some((m) => m.isStreaming)) {
@@ -146,5 +152,6 @@ export function useSocketEvents({ onEvent, emitWithAck, connected, usingBridge, 
     stopStreaming,
     setPullProgress,
     setCurrentUser,
+    setAwaitingFirstToken,
   ]);
 }

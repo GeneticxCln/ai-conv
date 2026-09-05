@@ -15,7 +15,12 @@ import { fileURLToPath } from 'url';
 
 // ============ Config ============
 const PORT = parseInt(process.env.PORT || '3001', 10);
-const CORS_ORIGIN = process.env.CORS_ORIGIN || 'http://localhost:5173';
+// Single origin or comma-separated list (e.g. the Tauri desktop shell adds
+// "http://localhost:3001,http://localhost:5173").
+const CORS_ORIGIN = (process.env.CORS_ORIGIN || 'http://localhost:5173')
+  .split(',')
+  .map((s) => s.trim())
+  .filter(Boolean);
 
 // Catch unhandled promise rejections
 process.on('unhandledRejection', (reason, promise) => {
@@ -33,7 +38,7 @@ async function main() {
 
   // CORS
   await fastify.register(fastifyCors, {
-    origin: CORS_ORIGIN,
+    origin: CORS_ORIGIN.length === 1 ? CORS_ORIGIN[0] : CORS_ORIGIN,
     credentials: true,
     methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
   });
@@ -69,7 +74,7 @@ async function main() {
   // We removed @fastify/websocket to prevent it from intercepting
   // WebSocket upgrades meant for socket.io.
   const wsOrigin = process.env.VITE_WS_URL || '';
-  const corsOrigins = [CORS_ORIGIN];
+  const corsOrigins = [...CORS_ORIGIN];
   if (wsOrigin && !corsOrigins.includes(wsOrigin)) corsOrigins.push(wsOrigin);
   const io = new Server(fastify.server, {
     cors: {

@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import { User as UserIcon, Plus, Trash2 } from 'lucide-react';
 import { User } from '@ai-conv/types';
+import { getLastAuthError, clearLastAuthError } from '../hooks/useSocketActions';
 
 interface LoginModalProps {
   open: boolean;
@@ -22,6 +23,20 @@ export function LoginModal({ open, users, onPick, onCreate, onDeleteUser, onClos
   const [avatar, setAvatar] = useState('🙂');
   const [busy, setBusy] = useState(false);
   const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  // Show WHY the last profile action failed (e.g. stale token rejected).
+  const run = async (fn: () => Promise<User | null>) => {
+    setBusy(true);
+    setError(null);
+    clearLastAuthError();
+    const u = await fn();
+    setBusy(false);
+    if (!u) {
+      setError(getLastAuthError() || 'That did not work — please try again');
+    }
+    return u;
+  };
 
   if (!open) return null;
 
@@ -40,7 +55,13 @@ export function LoginModal({ open, users, onPick, onCreate, onDeleteUser, onClos
             {users.map((u) => (
               <div key={u.id} className="flex items-center gap-2">
                 <button
-                  onClick={async () => { await onPick(u); onClose?.(); }}
+                  onClick={async () => {
+                    setError(null);
+                    clearLastAuthError();
+                    await onPick(u);
+                    const err = getLastAuthError();
+                    if (err) setError(err);
+                  }}
                   className="flex-1 flex items-center gap-3 px-3 py-2.5 rounded-lg bg-gray-50 dark:bg-gray-700/50 hover:bg-blue-50 dark:hover:bg-blue-900/30 text-left"
                 >
                   <span className="text-xl">{u.avatar || '🙂'}</span>
@@ -113,17 +134,21 @@ export function LoginModal({ open, users, onPick, onCreate, onDeleteUser, onClos
               <button
                 disabled={!name.trim() || busy}
                 onClick={async () => {
-                  setBusy(true);
-                  const u = await onCreate(name.trim(), avatar);
-                  setBusy(false);
+                  const u = await run(() => onCreate(name.trim(), avatar));
                   if (u) onClose?.();
                 }}
                 className="px-4 py-2 text-sm font-medium rounded-lg bg-blue-600 text-white hover:bg-blue-700 disabled:opacity-40"
               >
-                Start chatting
+                {busy ? 'Working…' : 'Start chatting'}
               </button>
             </div>
           </div>
+        )}
+
+        {error && (
+          <p className="mt-3 text-xs text-red-500 bg-red-50 dark:bg-red-900/20 rounded px-2 py-1.5" role="alert">
+            {error}
+          </p>
         )}
       </div>
     </div>

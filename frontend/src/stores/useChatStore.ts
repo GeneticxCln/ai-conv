@@ -46,6 +46,13 @@ interface ChatState {
   startStreaming: (messageId: string, agentId: string) => void;
   stopStreaming: (messageId: string) => void;
 
+  // "Model loading" state — set when a message was dispatched and no agent
+  // token has arrived yet. Cleared on first token, agent:done, agent:error,
+  // generation:stopped, or conversation switch. Makes slow model loads
+  // visible instead of looking like dead chat.
+  awaitingFirstToken: Record<string, boolean>; // conversationId -> true
+  setAwaitingFirstToken: (conversationId: string, waiting: boolean) => void;
+
   // Model pulls
   pullProgress: Record<string, { status: string; percent: number | null; _ts: number }>;
   setPullProgress: (model: string, p: { status: string; percent: number | null }) => void;
@@ -147,6 +154,16 @@ export const useChatStore = create<ChatState>()(
           if (!messageId) return { streamingMessages: {} };
           const { [messageId]: _, ...rest } = state.streamingMessages;
           return { streamingMessages: rest };
+        }),
+
+      // Awaiting first token
+      awaitingFirstToken: {},
+      setAwaitingFirstToken: (conversationId, waiting) =>
+        set((state) => {
+          const next = { ...state.awaitingFirstToken };
+          if (waiting) next[conversationId] = true;
+          else delete next[conversationId];
+          return { awaitingFirstToken: next };
         }),
 
       // Model pulls

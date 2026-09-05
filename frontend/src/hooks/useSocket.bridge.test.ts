@@ -13,6 +13,11 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 if (typeof globalThis.window === 'undefined') {
   (globalThis as any).window = {};
 }
+// The app resolves its backend URL from window.location.origin (same-origin
+// desktop shells); polyfill a browser-like origin for the Node test env.
+if (!(globalThis as any).window.location) {
+  (globalThis as any).window.location = { origin: 'http://localhost:5173' };
+}
 if (typeof globalThis.localStorage === 'undefined') {
   const store: Record<string, string> = {};
   (globalThis as any).localStorage = {
@@ -104,6 +109,7 @@ const storeState: Record<string, unknown> = {
   removeMessage: vi.fn(),
   startStreaming: vi.fn(),
   stopStreaming: vi.fn(),
+  setAwaitingFirstToken: vi.fn(),
   currentConversationId: null,
   currentUser: null,
   agents: [],

@@ -31,8 +31,9 @@ node scripts/generate-jwt-secret.mjs
 # Start all services (pulls llama3.1:8b on first run — may take a few minutes)
 docker compose up --build
 
-# In another terminal — the desktop app:
-cd frontend && npx electron . --no-sandbox
+# The desktop app (Tauri shell — spawns the backend sidecar itself):
+bash src-tauri/build-tauri.sh
+./src-tauri/target/release/ai-conv
 ```
 
 ### Access
@@ -40,12 +41,20 @@ cd frontend && npx electron . --no-sandbox
 - **Backend API**: http://localhost:3001
 - **Ollama API**: http://localhost:11434
 
-## Packaging (installers)
+## Packaging (desktop app)
+
+The desktop shell is **Tauri 2** (Rust + OS webview) with the Fastify backend
+packaged as a self-contained sidecar binary (`sidecar/`, built with
+@yao-pkg/pkg). No Electron.
 
 ```bash
-cd frontend
-npm run package        # builds the configured Linux unpacked app (see electron-builder targets)
+npm run package --workspace=frontend   # = bash src-tauri/build-tauri.sh
+# → frontend built to dist-tauri, sidecar binary + resources staged,
+#   Rust release build at src-tauri/target/release/ai-conv
 ```
+
+For distributable installers (.deb/.rpm/AppImage), run `cargo tauri build`
+instead of the plain cargo build step.
 
 ## Tests & Lint
 

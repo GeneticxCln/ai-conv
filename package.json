@@ -16,7 +16,9 @@
     "serve": "bash scripts/rebuild-restart.sh",
     "build": "npm run build --workspaces",
     "lint": "npm run lint --workspaces",
-    "db:push": "npm run db:push --workspace=backend"
+    "db:push": "npm run db:push --workspace=backend",
+    "tauri:build": "bash src-tauri/build-tauri.sh",
+    "tauri:dev": "cargo run --release --manifest-path src-tauri/Cargo.toml"
   },
   "devDependencies": {
     "concurrently": "^8.2.2",

@@ -8,16 +8,24 @@ const withTimeout = <T>(promise: Promise<T>, ms: number, timeoutError: string): 
     new Promise<never>((_, reject) => setTimeout(() => reject(new Error(timeoutError)), ms)),
   ]);
 
-// Connect directly to the backend. Polling first (WebSocket upgrade can
-// fail through Vite proxy on some setups), but socket.io auto-upgrades.
-const WS_URL = import.meta.env.VITE_WS_URL || 'http://localhost:3001';
+// Connect directly to the backend. Same-origin by default: the desktop
+// shells (Tauri and packaged Electron) load the app FROM the backend, so
+// window.location.origin already points at it — no hardcoded host, and no
+// localhost→::1 IPv6 resolution issues inside WebKitGTK. VITE_WS_URL remains
+// the dev/browser override. (Guarded for Node test environments.)
+const WS_URL: string =
+  import.meta.env.VITE_WS_URL ||
+  (typeof window !== 'undefined' ? window.location.origin : 'http://localhost:3001');
 
 function getAuthToken(): string | null {
   if (typeof window === 'undefined') return null;
   return localStorage.getItem('aiconv_token');
 }
 
-// Shared global type for the Electron preload bridge (contextIsolation=true)
+// Shared global type for the Tauri desktop adapter (src/lib/tauriAdapter.ts).
+// In the Tauri window this is installed at startup and the app talks to the
+// backend through its same-origin socket — exactly the surface the old
+// Electron preload bridge exposed, now backed by socket.io directly.
 declare global {
   interface Window {
     electronAPI?: {
