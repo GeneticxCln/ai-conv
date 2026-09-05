@@ -22,7 +22,10 @@ variables:
   NODE_OPTIONS: "--max-old-space-size=4096"
 
 default:
-  image: node:20-bookworm
+  # Node 26 — undici@8 (backend dep) requires >= 22.19 and the dev machine
+  # runs v26; Node 20 workers crash in vitest with
+  # "webidl.util.markAsUncloneable is not a function".
+  image: node:26-bookworm
   before_script:
     - npm ci --legacy-peer-deps
     # Same as the GH workflow's "Generate JWT secret" step: tests and builds
@@ -100,8 +103,11 @@ test:e2e:
     DATABASE_PATH: /tmp/ai-conv-e2e.db
     FF_NETWORK_PER_BUILD: 1
   before_script:
-    # Node deps (root + frontend) — the Playwright image ships Node 20+ and
-    # the browsers, so no npx playwright install needed.
+    # Match the rest of the pipeline: undici@8 needs Node >= 22.19, and the
+    # Playwright image's distro Node is older.
+    - curl -sL https://deb.nodesource.com/setup_26.x | bash - > /dev/null && apt-get update > /dev/null && apt-get install -y nodejs > /dev/null
+    # Node deps (root + frontend) — the Playwright image ships the browsers,
+    # so no npx playwright install needed.
     - npm ci --legacy-peer-deps
     - export JWT_SECRET="$(node -e "process.stdout.write(require('crypto').randomBytes(32).toString('hex'))")"
     # Wait for the Ollama service to answer, then pull models via HTTP API.
@@ -172,7 +178,7 @@ release:tauri:
     TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ""
   script:
     - apt-get update > /dev/null && apt-get install -y --no-install-recommends libwebkit2gtk-4.1-dev libgtk-3-dev libayatana-appindicator3-dev librsvg2-dev patchelf curl jq file > /dev/null
-    - curl -sL https://deb.nodesource.com/setup_20.x | bash - > /dev/null && apt-get install -y nodejs > /dev/null
+    - curl -sL https://deb.nodesource.com/setup_26.x | bash - > /dev/null && apt-get install -y nodejs > /dev/null
     - curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain stable --profile minimal > /dev/null
     - source "$HOME/.cargo/env"
     - npm ci --legacy-peer-deps
