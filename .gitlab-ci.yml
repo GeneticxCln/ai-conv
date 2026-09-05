@@ -106,6 +106,9 @@ test:e2e:
     # Match the rest of the pipeline: undici@8 needs Node >= 22.19, and the
     # Playwright image's distro Node is older.
     - curl -sL https://deb.nodesource.com/setup_26.x | bash - > /dev/null && apt-get update > /dev/null && apt-get install -y nodejs > /dev/null
+    # The Playwright image has no C toolchain. better-sqlite3 ships no
+    # prebuilt binary for this Node ABI, so node-gyp must compile it.
+    - apt-get install -y build-essential python3 > /dev/null
     # Node deps (root + frontend) — the Playwright image ships the browsers,
     # so no npx playwright install needed.
     - npm ci --legacy-peer-deps
