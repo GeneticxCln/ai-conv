@@ -1,6 +1,10 @@
 # Build stage: install the root workspace and compile the Vite bundle.
-FROM node:20-alpine AS build
+FROM node:26-alpine AS build
 WORKDIR /app
+
+# Match CI/dev Node (undici@8 needs >= 22.19) and pin node-gyp headers to
+# the official dist host — unofficial-builds has flaked with ECONNRESET.
+ENV npm_config_disturl=https://nodejs.org/download/release
 
 # The root workspace installs better-sqlite3 even for the frontend build,
 # so provide the native module toolchain before npm ci.

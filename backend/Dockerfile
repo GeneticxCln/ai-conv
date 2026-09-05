@@ -1,6 +1,10 @@
-FROM node:20-alpine AS build
+FROM node:26-alpine AS build
 
 WORKDIR /app
+# disturl pinned to the official release host — some node:20-alpine layers
+# resolved headers via unofficial-builds.nodejs.org, which has flaked.
+# Node 26 also matches CI/dev; undici@8 (backend dep) requires >= 22.19.
+ENV npm_config_disturl=https://nodejs.org/download/release
 RUN apk add --no-cache sqlite-libs python3 make g++
 
 COPY package.json package-lock.json ./
