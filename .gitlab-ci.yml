@@ -20,6 +20,12 @@ stages:
 variables:
   GIT_SUBMODULE_STRATEGY: normal
   NODE_OPTIONS: "--max-old-space-size=4096"
+  # Redirect npm's download cache and node-gyp's header cache INTO the
+  # project dir so the job cache can actually capture them. Without this,
+  # npm writes to ~/.npm (outside $CI_PROJECT_DIR) and the cached .npm/
+  # archive stays empty.
+  npm_config_cache: "$CI_PROJECT_DIR/.npm"
+  npm_config_devdir: "$CI_PROJECT_DIR/.gyp"
 
 default:
   # Node 26 — undici@8 (backend dep) requires >= 22.19 and the dev machine
@@ -31,21 +37,16 @@ default:
     # Same as the GH workflow's "Generate JWT secret" step: tests and builds
     # refuse to run with the default dev secret.
     - export JWT_SECRET="$(node -e "process.stdout.write(require('crypto').randomBytes(32).toString('hex'))")"
-  cache:
-    # Keyed on the lockfile so a dependency bump invalidates the cache.
-    key:
-      files:
-        - package-lock.json
-    paths:
-      - .npm/
 
 .npm_cache: &npm_cache
+  # Keyed on the lockfile so a dependency bump invalidates the cache.
   cache:
     key:
       files:
         - package-lock.json
     paths:
       - .npm/
+      - .gyp/
 
 # ---------------------------------------------------------------------------
 # Stage: build
@@ -189,11 +190,33 @@ release:tauri:
     # linuxdeploy (AppImage bundling) self-extracts via FUSE, which CI
     # runners don't have — this env makes it extract to a temp dir instead.
     APPIMAGE_EXTRACT_AND_RUN: "1"
+    # Redirect rustup + cargo into the project dir so the caches below can
+    # capture the toolchain, the crate registry, and the git db. Without
+    # this every tag re-downloads ~700 crates and a full rust toolchain.
+    RUSTUP_HOME: "$CI_PROJECT_DIR/.rustup"
+    CARGO_HOME: "$CI_PROJECT_DIR/.cargo"
+  cache:
+    # Independent entries: toolchain changes rarely; the crate registry is
+    # keyed on Cargo.lock so dependency bumps invalidate only that part.
+    - key: "rustup-stable-toolchain"
+      paths:
+        - .rustup/
+    - key:
+        files:
+          - src-tauri/Cargo.lock
+      paths:
+        - .cargo/
+    - key:
+        files:
+          - package-lock.json
+      paths:
+        - .npm/
+        - .gyp/
   script:
     - apt-get update > /dev/null && apt-get install -y --no-install-recommends libwebkit2gtk-4.1-dev libgtk-3-dev libayatana-appindicator3-dev librsvg2-dev patchelf curl jq file > /dev/null
     - curl -sL https://deb.nodesource.com/setup_26.x | bash - > /dev/null && apt-get install -y nodejs > /dev/null
     - curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain stable --profile minimal > /dev/null
-    - source "$HOME/.cargo/env"
+    - source "$CARGO_HOME/env"
     - npm ci --legacy-peer-deps
     # The Tauri bundle ships the compiled backend (bundle-backend.cjs copies
     # backend/dist) — a fresh checkout must build it first.
