@@ -12,7 +12,7 @@
     "preview": "vite preview",
     "lint": "eslint src --ext .ts,.tsx",
     "test": "vitest run src",
-    "package": "bash src-tauri/build-tauri.sh",
+    "package": "bash ../src-tauri/build-tauri.sh",
     "test:e2e": "playwright test"
   },
   "dependencies": {

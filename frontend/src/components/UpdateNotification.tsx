@@ -45,7 +45,10 @@ export function UpdateNotification() {
     }
   };
 
-  if (dismissed) return null;
+  // Nothing to show — most common state: the launch auto-check found no
+  // update. Must render null, otherwise an empty dark toast box sits in the
+  // bottom-right corner above the chat composer.
+  if (dismissed || (!checking && !available && !downloaded && !error)) return null;
 
   const pct =
     progress && progress.total

@@ -21,7 +21,10 @@ services:
     container_name: ai-conv-model-puller
     environment:
       - OLLAMA_HOST=http://ollama:11434
-    command: ["pull", "llama3.1:8b"]
+    # Keep production model availability aligned with CI and the default
+    # compose stack: small chat model for smoke tests, embedding model for
+    # classification/search, and the larger general-purpose model.
+    command: ["sh", "-c", "ollama pull qwen2.5:0.5b && ollama pull nomic-embed-text && ollama pull llama3.1:8b"]
     depends_on:
       ollama:
         condition: service_healthy

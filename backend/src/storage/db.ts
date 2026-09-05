@@ -1,11 +1,16 @@
 import Database, { Database as DatabaseType } from 'better-sqlite3';
 import { join, dirname } from 'path';
+import { fileURLToPath } from 'url';
 import { mkdirSync } from 'fs';
 import { Conversation, Message, Persona } from '@ai-conv/types';
 import { randomUUID } from 'crypto';
 import { migrate } from './migrate.js';
 
-const DB_PATH = process.env.DATABASE_PATH || join(process.cwd(), 'data', 'ai-conv.db');
+// Keep local development on one database regardless of whether the backend
+// is launched from the repository root, the backend workspace, or dist/.
+// Packaged/Docker launches provide DATABASE_PATH explicitly.
+const DEFAULT_DB_PATH = join(dirname(fileURLToPath(import.meta.url)), '..', '..', 'data', 'ai-conv.db');
+const DB_PATH = process.env.DATABASE_PATH || DEFAULT_DB_PATH;
 mkdirSync(dirname(DB_PATH), { recursive: true });
 
 // This is the only application SQLite handle. Every query and migration uses it.
@@ -177,6 +182,19 @@ export function getConversations(userId: string): Conversation[] {
   return rows.map(mapConversationRow);
 }
 
+function parseParticipants(value: unknown): string[] | undefined {
+  if (typeof value !== 'string' || !value) return undefined;
+  try {
+    const parsed: unknown = JSON.parse(value);
+    return Array.isArray(parsed) && parsed.every((id) => typeof id === 'string')
+      ? parsed
+      : undefined;
+  } catch {
+    // A malformed legacy row must not crash conversation-list/history events.
+    return undefined;
+  }
+}
+
 function mapConversationRow(row: any): Conversation {
   return {
     id: row.id,
@@ -184,7 +202,7 @@ function mapConversationRow(row: any): Conversation {
     createdAt: row.created_at,
     updatedAt: row.updated_at,
     userId: row.user_id || undefined,
-    participants: row.participants ? JSON.parse(row.participants) : undefined,
+    participants: parseParticipants(row.participants),
   };
 }
 
@@ -227,8 +245,7 @@ export function getParticipants(id: string, userId?: string): string[] | null {
   const row = (userId
     ? db.prepare('SELECT participants FROM conversations WHERE id = ? AND user_id = ?').get(id, userId)
     : db.prepare('SELECT participants FROM conversations WHERE id = ?').get(id)) as any;
-  if (!row?.participants) return null;
-  try { return JSON.parse(row.participants); } catch { return null; }
+  return parseParticipants(row?.participants) ?? null;
 }
 
 export function deleteMessageRow(id: string, userId: string): { ok: boolean; conversationId?: string; role?: string } {

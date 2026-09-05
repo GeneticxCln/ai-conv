@@ -28,6 +28,13 @@ interface ChatState {
   removeConversation: (id: string) => void;
   clearAllConversations: () => void;
 
+  // Tabs & split view — multiple conversations open at once, one or two
+  // visible in the chat panel.
+  openTabIds: string[];
+  splitView: boolean;
+  closeTab: (id: string) => void;
+  setSplitView: (v: boolean) => void;
+
   // Messages
   messages: Record<string, Message[]>;
   addMessage: (conversationId: string, message: Message) => void;
@@ -84,18 +91,46 @@ export const useChatStore = create<ChatState>()(
       setConversations: (conversations) => set({ conversations }),
       addConversation: (conversation) =>
         set((state) => ({ conversations: [conversation, ...state.conversations] })),
-      setCurrentConversation: (currentConversationId) => set({ currentConversationId }),
+      // Selecting a conversation also opens it as a tab (auto-open on create,
+      // search pick, or drawer pick).
+      setCurrentConversation: (currentConversationId) =>
+        set((state) => ({
+          currentConversationId,
+          openTabIds:
+            currentConversationId !== null && !state.openTabIds.includes(currentConversationId)
+              ? [...state.openTabIds, currentConversationId]
+              : state.openTabIds,
+        })),
       removeConversation: (id) =>
         set((state) => {
           const conversations = state.conversations.filter((c) => c.id !== id);
           const messages = { ...state.messages };
           delete messages[id];
+          const openTabIds = state.openTabIds.filter((t) => t !== id);
           const currentConversationId =
-            state.currentConversationId === id ? conversations[0]?.id || null : state.currentConversationId;
-          return { conversations, messages, currentConversationId };
+            state.currentConversationId === id
+              ? (openTabIds[openTabIds.length - 1] ?? conversations[0]?.id) || null
+              : state.currentConversationId;
+          const splitView = state.splitView && openTabIds.length >= 2;
+          return { conversations, messages, openTabIds, currentConversationId, splitView };
         }),
       clearAllConversations: () =>
-        set({ conversations: [], messages: {}, currentConversationId: null }),
+        set({ conversations: [], messages: {}, currentConversationId: null, openTabIds: [], splitView: false }),
+
+      // Tabs & split view
+      openTabIds: [],
+      splitView: false,
+      closeTab: (id) =>
+        set((state) => {
+          const openTabIds = state.openTabIds.filter((t) => t !== id);
+          const currentConversationId =
+            state.currentConversationId === id
+              ? openTabIds[openTabIds.length - 1] ?? null
+              : state.currentConversationId;
+          const splitView = state.splitView && openTabIds.length >= 2;
+          return { openTabIds, currentConversationId, splitView };
+        }),
+      setSplitView: (splitView) => set({ splitView }),
 
       // Messages
       messages: {},

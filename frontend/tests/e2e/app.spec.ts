@@ -25,7 +25,9 @@ test.describe('AI Conv core flows', () => {
   // Open the persona modal, fill it in, pick the fastest installed chat-capable
   // model (never hardcoded), and create the persona.
   async function createPersona(page: Page, name: string, systemPrompt: string) {
-    await page.getByRole('button', { name: 'New', exact: true }).click();
+    // The persona bar shows a round + (personas exist) or a ghost button
+    // (empty state) — both open the same modal.
+    await page.getByRole('button', { name: /New persona|Create your first persona/ }).click();
     await expect(page.getByRole('heading', { name: 'New Persona' })).toBeVisible();
     await page.getByPlaceholder('e.g. Alex').fill(name);
     await page.getByPlaceholder('Describe how this persona talks and behaves...').fill(systemPrompt);
@@ -61,11 +63,12 @@ test.describe('AI Conv core flows', () => {
 
   test.beforeEach(async ({ page }) => {
     await page.goto('/');
-    await expect(page.getByRole('heading', { name: 'AI Conv' })).toBeVisible();
+    // The app loads once the top bar (profile chip + settings) is present.
+    await expect(page.getByRole('button', { name: 'Settings' })).toBeVisible();
   });
 
   test('loads the authenticated main page', async ({ page }) => {
-    await expect(page.getByText('Multi-Persona Messenger')).toBeVisible();
+    await expect(page.getByRole('button', { name: 'Settings' })).toBeVisible();
     await expect(page.getByText('No conversation selected')).toBeVisible();
     await expect(page.getByText('Connected')).toBeVisible();
   });
@@ -167,6 +170,93 @@ test.describe('AI Conv core flows', () => {
     // appears both as the sidebar title and the message bubble. Scope the
     // assertion to the message bubble only.
     await expect(page.getByRole('paragraph').filter({ hasText: 'Hello, world!' }).first()).toBeVisible();
+  });
+
+  test('right-click copies a message from its context menu', async ({ page, context }) => {
+    await context.grantPermissions(['clipboard-read', 'clipboard-write'], {
+      origin: new URL(page.url()).origin,
+    });
+
+    await page.getByRole('button', { name: 'New Conversation' }).first().click();
+    const input = page.getByPlaceholder('Type a message... (Shift+Enter for new line)');
+    const copiedText = 'Clipboard copy test';
+    await input.fill(copiedText);
+    await input.press('Enter');
+
+    const message = page.locator('p').filter({ hasText: copiedText }).last();
+    await expect(message).toBeVisible();
+    await message.click({ button: 'right' });
+
+    await expect(page.getByRole('menu')).toBeVisible();
+    await expect(page.getByRole('menuitem', { name: 'Copy message' })).toBeEnabled();
+    await page.getByRole('menuitem', { name: 'Copy message' }).click();
+    await expect.poll(() => page.evaluate(() => navigator.clipboard.readText())).toBe(copiedText);
+  });
+
+  test('right-click copies only the contents of a Markdown code block', async ({ page, context }) => {
+    test.setTimeout(180_000);
+    await context.grantPermissions(['clipboard-read', 'clipboard-write'], {
+      origin: new URL(page.url()).origin,
+    });
+
+    await createPersona(
+      page,
+      'CodeBot',
+      'When asked for code, reply with exactly one fenced Markdown code block and no surrounding explanation.',
+    );
+
+    await page.getByRole('button', { name: 'New Conversation' }).first().click();
+    const input = page.getByPlaceholder('Type a message... (Shift+Enter for new line)');
+    await input.fill('@CodeBot Reply with exactly this fenced code block and no other text: ```js\nconst copiedValue = "clipboard";\n```');
+    await input.press('Enter');
+
+    const codeBlock = page.getByTestId('markdown-code-block');
+    await expect(codeBlock).toBeVisible({ timeout: 120_000 });
+    await expect(codeBlock).toHaveAttribute('data-language', 'JavaScript');
+    await expect(codeBlock.getByText('JavaScript', { exact: true })).toBeVisible();
+    await expect(codeBlock).toHaveClass(/bg-gray-50/);
+    await expect(codeBlock).toHaveClass(/dark:bg-gray-950/);
+    await codeBlock.click({ button: 'right' });
+
+    await expect(page.getByRole('menu')).toBeVisible();
+    await expect(page.getByRole('menuitem', { name: 'Copy code' })).toBeEnabled();
+    await expect(page.getByRole('menuitem', { name: 'Copy message' })).toHaveCount(0);
+    await page.getByRole('menuitem', { name: 'Copy code' }).click();
+
+    await expect.poll(() => page.evaluate(() => navigator.clipboard.readText()))
+      .toBe('const copiedValue = "clipboard";');
+  });
+
+  test('right-click edits composer text with clipboard actions', async ({ page, context }) => {
+    await context.grantPermissions(['clipboard-read', 'clipboard-write'], {
+      origin: new URL(page.url()).origin,
+    });
+
+    await page.getByRole('button', { name: 'New Conversation' }).first().click();
+    const input = page.getByPlaceholder('Type a message... (Shift+Enter for new line)');
+
+    await page.evaluate(() => navigator.clipboard.writeText('pasted text'));
+    await input.fill('prefix: ');
+    await input.click({ button: 'right' });
+    await expect(page.getByRole('menuitem', { name: 'Paste' })).toBeEnabled();
+    await page.getByRole('menuitem', { name: 'Paste' }).click();
+    await expect(input).toHaveValue('prefix: pasted text');
+
+    await input.selectText();
+    await input.click({ button: 'right' });
+    await expect(page.getByRole('menuitem', { name: 'Cut' })).toBeEnabled();
+    await page.getByRole('menuitem', { name: 'Cut' }).click();
+    await expect(input).toHaveValue('');
+    await expect.poll(() => page.evaluate(() => navigator.clipboard.readText())).toBe('prefix: pasted text');
+
+    await input.fill('select all test');
+    await input.click({ button: 'right' });
+    await expect(page.getByRole('menuitem', { name: 'Select all' })).toBeEnabled();
+    await page.getByRole('menuitem', { name: 'Select all' }).click();
+    await expect.poll(() => page.evaluate(() => {
+      const textarea = document.querySelector('textarea');
+      return textarea ? [textarea.selectionStart, textarea.selectionEnd] : null;
+    })).toEqual([0, 'select all test'.length]);
   });
 
   test('toggles dark mode', async ({ page }) => {

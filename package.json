@@ -30,7 +30,7 @@
   "allowScripts": {
     "better-sqlite3@13.0.3": true
   },
-  "description": "A real-time desktop (Electron) messenger where **you create your own AI personas** — powered by local LLMs via Ollama. No hard-coded personas, no hard-coded models.",
+  "description": "A real-time desktop (Tauri) messenger where **you create your own AI personas** — powered by local LLMs via Ollama. No hard-coded personas, no hard-coded models.",
   "main": "index.js",
   "keywords": [],
   "type": "commonjs"

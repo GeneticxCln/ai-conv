@@ -29,7 +29,7 @@ function loadJwtSecret(): string {
   for (const dir of candidateDirs) {
     const candidatePath = resolve(dir, '.jwt-secret');
     if (existsSync(candidatePath)) {
-      try { return readFileSync(candidatePath, 'utf-8').trim(); } catch {}
+      try { return readFileSync(candidatePath, 'utf-8').trim(); } catch { /* ignore unreadable candidate */ }
     }
   }
 

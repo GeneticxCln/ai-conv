@@ -3,7 +3,16 @@ import { mkdirSync, readdirSync, readFileSync } from 'fs';
 import { fileURLToPath } from 'url';
 import Database, { Database as DatabaseType } from 'better-sqlite3';
 
-const DEFAULT_DB_PATH = process.env.DATABASE_PATH || join(process.cwd(), 'data', 'ai-conv.db');
+// Match storage/db.ts: local development uses the backend workspace data
+// directory regardless of the caller's current working directory. Packaged
+// and Docker launches still override this with DATABASE_PATH.
+const DEFAULT_DB_PATH = process.env.DATABASE_PATH || join(
+  dirname(fileURLToPath(import.meta.url)),
+  '..',
+  '..',
+  'data',
+  'ai-conv.db',
+);
 const DEFAULT_MIGRATIONS_DIR = process.env.MIGRATIONS_DIR || join(
   dirname(fileURLToPath(import.meta.url)),
   'migrations'

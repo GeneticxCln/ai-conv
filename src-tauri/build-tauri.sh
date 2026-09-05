@@ -62,6 +62,19 @@ else
   cargo build --release --manifest-path src-tauri/Cargo.toml
 fi
 
+# Sync the frontend that the running app serves. The backend reads
+# FRONTEND_DIST from target/release/resources (stamped by tauri-build at
+# compile time); ALSO refresh src-tauri/resources so the next compile starts
+# current. Both copies come straight from frontend/dist-tauri — the actual
+# build output — never from an intermediate copy (stale-bundle trap).
+for TARGET_RES in "src-tauri/target/release/resources/frontend-dist" "src-tauri/resources/frontend-dist"; do
+  if [ -d "$TARGET_RES" ]; then
+    cp -f frontend/dist-tauri/index.html "$TARGET_RES/index.html"
+    cp -rf frontend/dist-tauri/assets/. "$TARGET_RES/assets/"
+    echo "[sync] frontend/dist-tauri → $TARGET_RES"
+  fi
+done
+
 echo
 echo "Done. Binary: src-tauri/target/release/ai-conv"
 echo "Run:    ./src-tauri/target/release/ai-conv"

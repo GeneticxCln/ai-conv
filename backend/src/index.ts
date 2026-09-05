@@ -11,6 +11,7 @@ import { getPersonas } from './storage/db';
 import type Redis from 'ioredis';
 import { connectRedis, disconnectRedis, getRedisClient } from './redis/client.js';
 import path from 'path';
+import { existsSync } from 'fs';
 import { fileURLToPath } from 'url';
 
 // ============ Config ============
@@ -51,24 +52,31 @@ async function main() {
   const frontendDist = process.env.FRONTEND_DIST
     ? path.resolve(process.env.FRONTEND_DIST)
     : path.resolve(__dirname, '../../frontend/dist');
-  if (!path.isAbsolute(frontendDist)) {
-    throw new Error(`Invalid frontend distribution path: ${frontendDist}`);
+  // The standalone backend Docker image is an API/socket server and does not
+  // contain the separate nginx frontend image. Static serving is therefore
+  // optional; single-port desktop/dev launches still provide this directory.
+  if (existsSync(frontendDist)) {
+    await fastify.register(fastifyStatic, {
+      root: frontendDist,
+      prefix: '/',
+      // wildcard: true resolves files against the filesystem per request, so a
+      // frontend rebuild (new hashed asset filenames) is picked up WITHOUT a
+      // backend restart. wildcard: false snapshots the file map at startup and
+      // new asset files fall through to the SPA fallback as text/html, which
+      // breaks the page until the backend is restarted.
+      wildcard: true,
+    });
+    // SPA fallback: serve index.html for any non-API, non-socket.io route.
+    fastify.setNotFoundHandler((req, reply) => {
+      if (req.url.startsWith('/socket.io/')) return;
+      reply.sendFile('index.html');
+    });
+  } else {
+    console.log(`[HTTP] Frontend distribution not found at ${frontendDist}; running API-only`);
+    fastify.setNotFoundHandler((_req, reply) => {
+      reply.code(404).send({ error: 'Not found' });
+    });
   }
-  await fastify.register(fastifyStatic, {
-    root: frontendDist,
-    prefix: '/',
-    // wildcard: true resolves files against the filesystem per request, so a
-    // frontend rebuild (new hashed asset filenames) is picked up WITHOUT a
-    // backend restart. wildcard: false snapshots the file map at startup and
-    // new asset files fall through to the SPA fallback as text/html, which
-    // breaks the page until the backend is restarted.
-    wildcard: true,
-  });
-  // SPA fallback: serve index.html for any non-API, non-socket.io route
-  fastify.setNotFoundHandler((req, reply) => {
-    if (req.url.startsWith('/socket.io/')) return;
-    reply.sendFile('index.html');
-  });
 
   // Socket.io shares Fastify's HTTP server.
   // We removed @fastify/websocket to prevent it from intercepting

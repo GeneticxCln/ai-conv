@@ -1,6 +1,6 @@
 # AI Conv - Multi-Persona Messenger
 
-A real-time desktop (Electron) messenger where **you create your own AI personas** — powered by local LLMs via Ollama. No hard-coded personas, no hard-coded models.
+A real-time desktop (Tauri) messenger where **you create your own AI personas** — powered by local LLMs via Ollama. No hard-coded personas, no hard-coded models.
 
 ## Features
 
@@ -13,7 +13,7 @@ A real-time desktop (Electron) messenger where **you create your own AI personas
 - 🤝 Optional agent-to-agent round: personas react to each other's answers
 - 🎯 `@Name` targeting — ask one persona directly
 - 💾 SQLite persistence (Docker named volume)
-- 🖥 Electron desktop window
+- 🖥 Tauri desktop window with a packaged backend sidecar
 
 ## Quick Start
 
@@ -48,7 +48,7 @@ packaged as a self-contained sidecar binary (`sidecar/`, built with
 @yao-pkg/pkg). No Electron.
 
 ```bash
-npm run package --workspace=frontend   # = bash src-tauri/build-tauri.sh
+npm run package --workspace=frontend   # = bash ../src-tauri/build-tauri.sh (from frontend)
 # → frontend built to dist-tauri, sidecar binary + resources staged,
 #   Rust release build at src-tauri/target/release/ai-conv
 ```
@@ -134,7 +134,7 @@ Personas are created and managed via the UI (Personas sidebar). They are stored 
 
 ## Default Models
 
-No model is hard-coded. The backend auto-detects the first model installed in Ollama when creating a persona, and the model picker lists every model you have downloaded. The Docker `model-puller` service pre-downloads `llama3.1:8b` so the stack works out of the box — you can pull any other model from the app's Settings → Models tab.
+No model is hard-coded. The backend auto-detects the first model installed in Ollama when creating a persona, and the model picker lists every model you have downloaded. The Docker `model-puller` service pre-downloads `qwen2.5:0.5b` (chat), `nomic-embed-text` (embeddings), and `llama3.1:8b` so the stack works out of the box — you can pull any other model from the app's Settings → Models tab.
 
 ## Browser E2E
 
