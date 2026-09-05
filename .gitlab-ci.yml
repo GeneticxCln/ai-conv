@@ -185,6 +185,10 @@ release:tauri:
     - curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain stable --profile minimal > /dev/null
     - source "$HOME/.cargo/env"
     - npm ci --legacy-peer-deps
+    # The Tauri bundle ships the compiled backend (bundle-backend.cjs copies
+    # backend/dist) — a fresh checkout must build it first.
+    - npm run build --workspace=packages/types
+    - npm run build --workspace=backend
     - |
       # The Tauri CLI signs updater artifacts when TAURI_SIGNING_PRIVATE_KEY
       # (or _PATH) is set; the CI variable holds the full key contents.

@@ -43,6 +43,13 @@ if [ "$SKIP_SIDECAR" = false ]; then
   echo "=== [2/3] backend sidecar + resources ==="
   # The sidecar build reuses frontend/resources/backend (bundle-backend.cjs
   # output). Rebundle only when missing.
+  # bundle-backend.cjs copies backend/dist into the resources bundle, so the
+  # backend must be compiled first — on a fresh clone it isn't.
+  if [ ! -d backend/dist ]; then
+    echo "(backend/dist missing — building packages/types + backend)"
+    npm run build --workspace=packages/types
+    npm run build --workspace=backend
+  fi
   if [ ! -f frontend/resources/backend/dist/index.js ]; then
     echo "(backend bundle missing — running bundle-backend.cjs)"
     node frontend/scripts/bundle-backend.cjs
