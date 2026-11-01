@@ -376,3 +376,16 @@ release:tauri:
     # uploading or creating a Release (docs/releasing.md).
     - if: '$RELEASE_DRY_RUN == "true" && $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH'
   timeout: 60m
+
+# Same job, but manually triggered from any main pipeline and ALWAYS a dry run:
+# it builds and signs the bundle, lists the outputs, and exits before any
+# upload or Release creation. This is what proves the tagged path without
+# publishing anything.
+release:tauri:dry-run:
+  extends: release:tauri
+  variables:
+    RELEASE_DRY_RUN: "true"
+  rules:
+    - if: '$CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH'
+      when: manual
+      allow_failure: true
