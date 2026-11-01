@@ -47,11 +47,10 @@ git push --follow-tags                     # .gitlab-ci.yml release:tauri job ta
 release job refuses to build unsigned updater artifacts.
 
 Before cutting a tag, prove the job on `main` without publishing anything:
-
-```bash
-glab api --method POST "projects/:id/pipeline" \
-  -f ref=main -f 'variables[][key]=RELEASE_DRY_RUN' -f 'variables[][value]=true'
-```
+trigger the manual `release:tauri:dry-run` job from any `main` pipeline (GitLab
+CI/CD → Pipelines → Play, or `glab ci run` and click Play). It shares the
+release job's script with `RELEASE_DRY_RUN=true` hard-set, so it can never
+upload anything.
 
 That run builds and signs the bundle, lists the outputs, and exits before the
 upload and Release steps — nothing is published to the package registry and no
