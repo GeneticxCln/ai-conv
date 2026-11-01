@@ -42,6 +42,9 @@ services:
       - PORT=3001
       - DATABASE_PATH=/data/ai-conv.db
       - JWT_SECRET=${JWT_SECRET:?Set JWT_SECRET in .env or run npm run setup}
+      # Published ports NAT the host browser to the Docker bridge gateway;
+      # treat that range as local so the profile picker keeps working.
+      - LOCAL_CLIENT_CIDRS=${LOCAL_CLIENT_CIDRS:-172.16.0.0/12}
     volumes:
       - ./backend/src:/app/backend/src
       - ./backend/tsconfig.json:/app/backend/tsconfig.json:ro

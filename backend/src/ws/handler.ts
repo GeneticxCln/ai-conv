@@ -1,5 +1,6 @@
 import { Server, Socket } from 'socket.io';
 import { randomUUID } from 'crypto';
+import { BlockList, isIP } from 'net';
 import {
   AgentRegistry,
   DefaultAgent,
@@ -43,6 +44,7 @@ import {
   cleanupRateLimit,
   checkMessageRateLimit,
   checkCreateRateLimit,
+  checkRegenerateRateLimit,
 } from '../redis/rateLimiter.js';
 
 type Ack<T = any> = (value: T) => void;
@@ -55,14 +57,47 @@ declare module 'socket.io' {
 }
 
 /**
- * A loopback client is the desktop app's own bridge (or a browser on the
- * same machine). Only loopback connections may bootstrap/recover local
- * profiles anonymously — remote clients must always authenticate, so a
- * stale token can never lock the desktop user out of their own data.
+ * "Local" means the desktop app's own bridge (or a browser on the same
+ * machine), plus any subnet the operator explicitly trusts through
+ * LOCAL_CLIENT_CIDRS. The configured list exists for container deployments:
+ * a published Docker port rewrites the host browser's source address to the
+ * bridge gateway, so a strict loopback check would hide the profile picker
+ * from the container's own user.
+ *
+ * Loopback is ALWAYS local. Everything else stays remote unless listed.
  */
-function isLoopbackClient(socket: Socket): boolean {
-  const address = socket.handshake.address || '';
-  return address === '127.0.0.1' || address === '::1' || address === '::ffff:127.0.0.1';
+let localClients: BlockList | null = null;
+
+function buildLocalClients(): BlockList {
+  const list = new BlockList();
+  list.addSubnet('127.0.0.0', 8, 'ipv4');
+  list.addAddress('::1', 'ipv6');
+
+  for (const raw of (process.env.LOCAL_CLIENT_CIDRS || '').split(',')) {
+    const entry = raw.trim();
+    if (!entry) continue;
+    const [address, prefixRaw] = entry.split('/');
+    const version = address ? isIP(address) : 0;
+    const family = version === 4 ? 'ipv4' : 'ipv6';
+    const maxPrefix = version === 4 ? 32 : 128;
+    const prefix = prefixRaw === undefined ? maxPrefix : Number(prefixRaw);
+    if (!version || !Number.isInteger(prefix) || prefix < 0 || prefix > maxPrefix) {
+      console.warn(`[auth] Ignoring invalid LOCAL_CLIENT_CIDRS entry: ${entry}`);
+      continue;
+    }
+    list.addSubnet(address, prefix, family);
+  }
+  return list;
+}
+
+function isLocalClient(socket: Socket): boolean {
+  let address = socket.handshake.address || '';
+  // Socket.io reports IPv4 peers as ::ffff:a.b.c.d on dual-stack sockets.
+  if (address.toLowerCase().startsWith('::ffff:')) address = address.slice(7);
+  const version = isIP(address);
+  if (version === 0) return false;
+  localClients ??= buildLocalClients();
+  return localClients.check(address, version === 4 ? 'ipv4' : 'ipv6');
 }
 
 const userRoom = (userId: string) => `user:${userId}`;
@@ -95,15 +130,15 @@ function emitConversationList(io: Server, userId: string) {
 }
 
 /**
- * Push the profile list only to loopback sockets. Profile names are a local
- * surface: a remote (LAN) client must never receive the list of profiles on
- * this machine, whether in response to a request or as a broadcast after a
- * profile is created/deleted.
+ * Push the profile list only to locally trusted sockets. Profile names are a
+ * local surface: a remote (LAN) client must never receive the list of
+ * profiles on this machine, whether in response to a request or as a
+ * broadcast after a profile is created/deleted.
  */
-function emitUsersListToLoopback(io: Server) {
+function emitUsersListToLocalClients(io: Server) {
   const users = getUsers().map(publicUser);
   for (const [, socket] of io.of('/').sockets) {
-    if (isLoopbackClient(socket)) socket.emit('users:list', users);
+    if (isLocalClient(socket)) socket.emit('users:list', users);
   }
 }
 
@@ -208,7 +243,7 @@ export function setupSocketHandler(io: Server, registry: AgentRegistry) {
       socket.emit('user:current', publicUser(socket.user));
       // Local-only surface: remote clients get their own identity via
       // user:current and must not learn the other profile names.
-      if (isLoopbackClient(socket)) socket.emit('users:list', getUsers().map(publicUser));
+      if (isLocalClient(socket)) socket.emit('users:list', getUsers().map(publicUser));
       socket.emit('personas:list', registry.getAllPersonas(socket.user.id));
       socket.emit('conversation:list', getConversations(socket.user.id));
     }
@@ -273,7 +308,7 @@ export function setupSocketHandler(io: Server, registry: AgentRegistry) {
     socket.on('users:list', (ack?: Ack) => {
       const user = requireUser(socket, ack);
       if (!user) return;
-      if (!isLoopbackClient(socket)) {
+      if (!isLocalClient(socket)) {
         emitAuthError(socket, ack, 'Profile listing is only available locally');
         return;
       }
@@ -287,7 +322,7 @@ export function setupSocketHandler(io: Server, registry: AgentRegistry) {
     socket.on('users:list:bootstrap', (ack?: Ack) => {
       // Same local-only rule as users:list. Anonymous loopback callers keep the
       // recovery path; authenticated remote callers are rejected too.
-      if (!isLoopbackClient(socket)) {
+      if (!isLocalClient(socket)) {
         emitAuthError(
           socket,
           ack,
@@ -305,13 +340,15 @@ export function setupSocketHandler(io: Server, registry: AgentRegistry) {
         data: { name?: string; avatar?: string },
         ack?: Ack,
       ) => {
-        // Anonymous profile creation is a one-time bootstrap operation.
+        // Anonymous profile creation is a local bootstrap/recovery operation.
         // Once a profile exists, callers must already hold a valid token —
-        // EXCEPT loopback clients (the desktop app's own bridge), which may
-        // recover access when their stored token went stale (e.g. the JWT
-        // secret was regenerated). Remote clients stay locked down.
-        if (!socket.user && getUsers().length > 0 && !isLoopbackClient(socket)) {
-          emitAuthError(socket, ack, 'Authentication required to create another profile');
+        // EXCEPT locally trusted clients (the desktop app's own bridge), which
+        // may recover access when their stored token went stale (e.g. the JWT
+        // secret was regenerated). Remote clients stay locked down: on an empty
+        // database an anonymous remote caller must not be able to claim the
+        // install (the first profile also inherits any unowned data).
+        if (!socket.user && !isLocalClient(socket)) {
+          emitAuthError(socket, ack, 'Authentication required to create a profile');
           return;
         }
         if (!(await checkCreateRateLimit(socket.id))) {
@@ -331,7 +368,7 @@ export function setupSocketHandler(io: Server, registry: AgentRegistry) {
         socket.join(userRoom(user.id));
         syncUserPersonas(registry, user.id);
         socket.emit('user:current', publicUser(user));
-        if (isLoopbackClient(socket)) socket.emit('users:list', getUsers().map(publicUser));
+        if (isLocalClient(socket)) socket.emit('users:list', getUsers().map(publicUser));
         socket.emit('personas:list', registry.getAllPersonas(user.id));
         socket.emit('conversation:list', getConversations(user.id));
         ack?.({ ok: true, user: publicUser(user), token });
@@ -340,12 +377,12 @@ export function setupSocketHandler(io: Server, registry: AgentRegistry) {
 
     // Local profile switching is explicit: the server issues a fresh token
     // for the selected profile and immediately binds the socket to that user.
-    // Loopback clients may switch profiles WITHOUT an existing token — that is
-    // the recovery path when a stored token went stale (regenerated JWT
-    // secret, expired token). Remote clients must authenticate first.
+    // Locally trusted clients may switch profiles WITHOUT an existing token —
+    // that is the recovery path when a stored token went stale (regenerated
+    // JWT secret, expired token). Remote clients must authenticate first.
     socket.on('user:select', (id: string, ack?: Ack) => {
-      const isLoopback = isLoopbackClient(socket);
-      if (!socket.user && !isLoopback) {
+      const isLocal = isLocalClient(socket);
+      if (!socket.user && !isLocal) {
         emitAuthError(socket, ack);
         return;
       }
@@ -354,7 +391,7 @@ export function setupSocketHandler(io: Server, registry: AgentRegistry) {
       // operation (the lock screen's profile picker). A remote token holder
       // may only re-select the profile it is already bound to; anything else
       // would hand over another profile's conversations and personas.
-      if (!isLoopback && socket.user && targetId !== socket.user.id) {
+      if (!isLocal && socket.user && targetId !== socket.user.id) {
         emitAuthError(socket, ack, 'Only the active profile can be selected remotely');
         return;
       }
@@ -373,7 +410,7 @@ export function setupSocketHandler(io: Server, registry: AgentRegistry) {
       socket.join(userRoom(selected.id));
       syncUserPersonas(registry, selected.id);
       socket.emit('user:current', publicUser(selected));
-      if (isLoopbackClient(socket)) socket.emit('users:list', getUsers().map(publicUser));
+      if (isLocalClient(socket)) socket.emit('users:list', getUsers().map(publicUser));
       socket.emit('personas:list', registry.getAllPersonas(selected.id));
       socket.emit('conversation:list', getConversations(selected.id));
       ack?.({ ok: true, user: publicUser(selected), token });
@@ -389,7 +426,7 @@ export function setupSocketHandler(io: Server, registry: AgentRegistry) {
       // holder on the network could wipe another profile's conversations and
       // personas. Checked before the lookup so remote callers cannot probe
       // which profile ids exist.
-      if (targetId !== user.id && !isLoopbackClient(socket)) {
+      if (targetId !== user.id && !isLocalClient(socket)) {
         emitAuthError(socket, ack, 'Only the active profile can be deleted remotely');
         return;
       }
@@ -411,7 +448,7 @@ export function setupSocketHandler(io: Server, registry: AgentRegistry) {
         socket.user = undefined;
         socket.data.authToken = undefined;
       }
-      emitUsersListToLoopback(io);
+      emitUsersListToLocalClients(io);
       ack?.({ ok: deleted });
     });
 
@@ -577,15 +614,15 @@ export function setupSocketHandler(io: Server, registry: AgentRegistry) {
         return;
       }
 
-      const now = Date.now();
-      const lastRegen = socket.data.lastRegenAt as number | undefined;
-      if (lastRegen && now - lastRegen < 3000) {
+      const conversationId = targetMessage.conversationId;
+      // Shared limiter (1 per 5s per conversation) instead of a per-socket
+      // timestamp: a reconnect must not reset the cooldown, and the limit is
+      // consistent with every other mutating event.
+      if (!(await checkRegenerateRateLimit(conversationId))) {
         ack?.({ ok: false, error: 'Please wait before regenerating again' });
         return;
       }
-      socket.data.lastRegenAt = now;
 
-      const conversationId = targetMessage.conversationId;
       abortStreamsForConversation(conversationId);
       const result = regenerateMessage(String(messageId), user.id);
       if (!result.ok || !result.conversationId || !result.userMessageContent) {
@@ -640,7 +677,7 @@ export function setupSocketHandler(io: Server, registry: AgentRegistry) {
     // webview, anonymous during first-launch/profile-pick) may list models —
     // remote clients still cannot.
     socket.on('models:list', async (ack?: Ack<string[]>) => {
-      if (!socket.user && !isLoopbackClient(socket)) {
+      if (!socket.user && !isLocalClient(socket)) {
         requireUser(socket, ack);
         return;
       }
@@ -659,7 +696,7 @@ export function setupSocketHandler(io: Server, registry: AgentRegistry) {
     socket.on(
       'models:list:full',
       async (ack?: Ack<Array<{ name: string; size: number; parameterSize?: string; capabilities?: string[] }>>) => {
-        if (!socket.user && !isLoopbackClient(socket)) {
+        if (!socket.user && !isLocalClient(socket)) {
           requireUser(socket, ack);
           return;
         }

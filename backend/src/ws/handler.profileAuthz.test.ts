@@ -11,7 +11,7 @@ vi.hoisted(() => {
 
 import { setupSocketHandler } from './handler';
 import { AgentRegistry } from '../agents/index.js';
-import { db, getUser } from '../storage/db.js';
+import { db, getUser, getUsers } from '../storage/db.js';
 
 interface Ack {
   ok?: boolean;
@@ -305,5 +305,28 @@ describe('profile listing is local-only', () => {
     await delay(200);
     expect(remoteEvents).toHaveLength(0);
     expect(localEvents).toHaveLength(1);
+  });
+});
+
+describe('anonymous first-profile bootstrap', () => {
+  it('rejects an anonymous remote client creating the first profile', async () => {
+    const { client } = await connect(undefined, { remote: true });
+
+    const result = await emitAck<Ack>(client, 'user:create', { name: 'Intruder' });
+
+    expect(result.ok).toBe(false);
+    expect(result.error).toBe('Authentication required to create a profile');
+    expect(result.token).toBeUndefined();
+    expect(getUsers()).toHaveLength(0);
+  });
+
+  it('still lets a local client create the first profile', async () => {
+    const { client } = await connect();
+
+    const result = await emitAck<Ack>(client, 'user:create', { name: 'Owner' });
+
+    expect(result.ok).toBe(true);
+    expect(result.token).toBeTruthy();
+    expect(getUsers().map((user) => user.name)).toEqual(['Owner']);
   });
 });

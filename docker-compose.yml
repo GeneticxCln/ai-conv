@@ -54,6 +54,12 @@ services:
       - PORT=3001
       - DATABASE_PATH=/data/ai-conv.db
       - JWT_SECRET=${JWT_SECRET:?Set JWT_SECRET before starting}
+      # A published port NATs the host browser's source address to the Docker
+      # bridge gateway (172.16.0.0/12). Without this the container would treat
+      # its own host as a remote LAN client and hide the profile picker. LAN
+      # clients keep their real source address and stay remote; widen only if
+      # your LAN itself uses 172.16.0.0/12.
+      - LOCAL_CLIENT_CIDRS=${LOCAL_CLIENT_CIDRS:-172.16.0.0/12}
       - REDIS_URL=redis://redis:6379
     volumes:
       - sqlite_data:/data

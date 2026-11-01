@@ -409,6 +409,14 @@ export function exportAllData(userId: string): ExportData {
   return { conversations, messages, personas: getPersonas(userId) };
 }
 
+// Bulk restore is bounded so one socket message cannot force an unbounded
+// synchronous SQLite transaction (memory / event-loop DoS).
+const MAX_IMPORT_CONVERSATIONS = 10_000;
+const MAX_IMPORT_MESSAGES = 50_000;
+const MAX_IMPORT_PERSONAS = 1_000;
+const MAX_IMPORT_TITLE = 200;
+const MAX_IMPORT_CONTENT = 100_000;
+
 export function importAllData(
   data: unknown,
   userId: string,
@@ -427,6 +435,15 @@ export function importAllData(
   if (importedConversations.length === 0 && importedMessages.length === 0 && importedPersonas.length === 0) {
     return { ok: false, error: 'Nothing to import — file contains no conversations, messages, or personas' };
   }
+  if (importedConversations.length > MAX_IMPORT_CONVERSATIONS) {
+    return { ok: false, error: `Import exceeds ${MAX_IMPORT_CONVERSATIONS} conversations` };
+  }
+  if (importedMessages.length > MAX_IMPORT_MESSAGES) {
+    return { ok: false, error: `Import exceeds ${MAX_IMPORT_MESSAGES} messages` };
+  }
+  if (importedPersonas.length > MAX_IMPORT_PERSONAS) {
+    return { ok: false, error: `Import exceeds ${MAX_IMPORT_PERSONAS} personas` };
+  }
 
   try {
     const conversationIds = new Map<string, string>();
@@ -434,6 +451,9 @@ export function importAllData(
       for (const conversation of importedConversations) {
         if (!conversation || typeof conversation.id !== 'string' || typeof conversation.title !== 'string') {
           throw new Error('Invalid conversation record');
+        }
+        if (conversation.title.length > MAX_IMPORT_TITLE) {
+          throw new Error(`Conversation title exceeds ${MAX_IMPORT_TITLE} characters`);
         }
 
         const existing = getConversation(conversation.id, userId);
@@ -461,8 +481,12 @@ export function importAllData(
 
         const existing = getMessage(message.id, userId);
         if (existing) continue;
+        const content = String(message.content || '');
+        if (content.length > MAX_IMPORT_CONTENT) {
+          throw new Error(`Message content exceeds ${MAX_IMPORT_CONTENT} characters`);
+        }
         const messageId = getMessage(message.id) ? randomUUID() : message.id;
-        createMessage(conversationId, message.role, String(message.content || ''), message.agentId, message.agentName, Boolean(message.isStreaming), messageId, message.createdAt);
+        createMessage(conversationId, message.role, content, message.agentId, message.agentName, Boolean(message.isStreaming), messageId, message.createdAt);
       }
 
       for (const persona of importedPersonas) {

@@ -131,6 +131,7 @@ Personas are created and managed via the UI (Personas sidebar). They are stored 
 | `DATABASE_PATH` | `/data/ai-conv.db` | SQLite file path |
 | `PORT` | `3001` | Backend HTTP port |
 | `JWT_SECRET` | *(required in production)* | Generate with `npm run setup`; keep stable across restarts |
+| `LOCAL_CLIENT_CIDRS` | *(empty)* | Comma-separated CIDRs treated as local clients (loopback is always local). Compose sets `172.16.0.0/12` because a published port rewrites the host browser's source address to the Docker bridge gateway |
 
 ## Default Models
 
