@@ -58,7 +58,9 @@ export type User = z.infer<typeof UserSchema>;
 // ============ Socket Events ============
 export const UserMessagePayloadSchema = z.object({
   conversationId: z.string().uuid(),
-  content: z.string(),
+  // Matches ConversationImportSchema's per-message cap; without it a single
+  // socket message can carry an arbitrarily large string into SQLite/Ollama.
+  content: z.string().max(100000),
   agentChat: z.boolean().optional(),
   tempId: z.string().uuid().optional(),
 });
