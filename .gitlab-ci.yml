@@ -261,6 +261,11 @@ release:tauri:
     # linuxdeploy (AppImage bundling) self-extracts via FUSE, which CI
     # runners don't have — this env makes it extract to a temp dir instead.
     APPIMAGE_EXTRACT_AND_RUN: "1"
+    # linuxdeploy strips bundled libraries; binutils on Ubuntu 22.04+ fails on
+    # the .relr.dyn sections modern glibc/webkit2gtk ship, and Tauri reports
+    # only "failed to run linuxdeploy". Tauri itself documents NO_STRIP for
+    # AppImage builds — skipping the strip step is the fix, not a workaround.
+    NO_STRIP: "true"
     # Redirect rustup + cargo into the project dir so the caches below can
     # capture the toolchain, the crate registry, and the git db. Without
     # this every tag re-downloads ~700 crates and a full rust toolchain.

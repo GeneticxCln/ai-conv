@@ -3,9 +3,10 @@
 /**
  * check-version-sync.mjs
  *
- * Three places carry the desktop app version and they MUST agree:
+ * Four places carry the desktop app version and they MUST agree:
  *   - package.json                (root; `npm version` bumps this)
  *   - src-tauri/tauri.conf.json   (what the built app reports to the updater)
+ *   - src-tauri/Cargo.toml        (the crate / binary version)
  *   - the git tag `vX.Y.Z`        (what latest.json advertises)
  *
  * If tauri.conf.json lags the tag, the app reports the old version forever and
@@ -32,14 +33,28 @@ function readVersion(relativePath, pick = (json) => json.version) {
   }
 }
 
+function readCargoVersion() {
+  try {
+    const toml = readFileSync(join(root, 'src-tauri/Cargo.toml'), 'utf8');
+    const match = toml.match(/^\[package\][\s\S]*?^version\s*=\s*"([^"]+)"/m);
+    if (!match) throw new Error('no version under [package]');
+    return match[1];
+  } catch (error) {
+    console.error(`Cannot read version from src-tauri/Cargo.toml: ${error.message}`);
+    process.exit(1);
+  }
+}
+
 const pkgVersion = readVersion('package.json');
 const tauriVersion = readVersion('src-tauri/tauri.conf.json');
+const cargoVersion = readCargoVersion();
 
-if (pkgVersion !== tauriVersion) {
+if (pkgVersion !== tauriVersion || pkgVersion !== cargoVersion) {
   console.error(
-    `Version mismatch: package.json is "${pkgVersion}" but ` +
-    `src-tauri/tauri.conf.json is "${tauriVersion}".\n` +
-    'Bump both (docs/releasing.md) so the built app and the updater manifest agree.',
+    `Version mismatch: package.json is "${pkgVersion}", ` +
+    `src-tauri/tauri.conf.json is "${tauriVersion}", and ` +
+    `src-tauri/Cargo.toml is "${cargoVersion}".\n` +
+    'Bump all three (docs/releasing.md) so the built app, its binary, and the updater manifest agree.',
   );
   process.exit(1);
 }
@@ -57,6 +72,6 @@ if (tag) {
 }
 
 console.log(
-  `Version ${pkgVersion} matches src-tauri/tauri.conf.json` +
+  `Version ${pkgVersion} matches src-tauri/tauri.conf.json and src-tauri/Cargo.toml` +
   (tag ? ` and tag ${tag}` : ''),
 );
