@@ -6,10 +6,13 @@
 #      frontend copy for single-port serving)
 #   3. Rust release build (sidecar found via src-tauri/binaries + resources)
 #
-# Usage: bash src-tauri/build-tauri.sh [--skip-frontend] [--skip-sidecar] [--cli] [--no-bundle]
+# Usage: bash src-tauri/build-tauri.sh [--skip-frontend] [--skip-sidecar] [--cli] [--no-bundle] [--verbose]
 #   --cli       Final build via `tauri build` (signs updater artifacts; requires
 #               TAURI_SIGNING_PRIVATE_KEY[_PASSWORD] env) instead of plain cargo.
 #   --no-bundle With --cli: skip OS installers, just build + sign the binary.
+#   --verbose   With --cli: pass `--verbose` to the Tauri CLI. The AppImage step
+#               reports a bare "failed to run linuxdeploy"; verbose is what
+#               surfaces the child process error.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
@@ -17,12 +20,14 @@ SKIP_FRONTEND=false
 SKIP_SIDECAR=false
 USE_TAURI_CLI=false
 NO_BUNDLE=false
+VERBOSE=false
 for arg in "$@"; do
   case "$arg" in
     --skip-frontend) SKIP_FRONTEND=true ;;
     --skip-sidecar) SKIP_SIDECAR=true ;;
     --cli) USE_TAURI_CLI=true ;;
     --no-bundle) NO_BUNDLE=true ;;
+    --verbose) VERBOSE=true ;;
   esac
 done
 
@@ -64,6 +69,7 @@ if [ "$USE_TAURI_CLI" = true ]; then
   # for local dev/test runs only.
   BUNDLE_ARGS=()
   if [ "$NO_BUNDLE" = true ]; then BUNDLE_ARGS+=(--no-bundle); fi
+  if [ "$VERBOSE" = true ]; then BUNDLE_ARGS+=(--verbose); fi
   # Pin the CLI major and answer the install prompt: on a CI runner npx has no
   # TTY to confirm with, and unpinned it can fetch a future major.
   npx --yes @tauri-apps/cli@2 build "${BUNDLE_ARGS[@]}"

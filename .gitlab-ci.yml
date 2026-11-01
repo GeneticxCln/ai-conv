@@ -313,7 +313,7 @@ release:tauri:
         echo "TAURI_SIGNING_PRIVATE_KEY is not set — updater artifacts would be unsigned" >&2
         exit 1
       fi
-    - npm run tauri:build -- --cli
+    - npm run tauri:build -- --cli --verbose
     - echo "--- bundle outputs ---" && find src-tauri/target/release/bundle -type f | sort
     # Dry run: `main` + RELEASE_DRY_RUN=true proves the whole build/sign path
     # without publishing. Stops here, before anything leaves the runner.
@@ -388,9 +388,18 @@ release:tauri:
 # publishing anything.
 release:tauri:dry-run:
   extends: release:tauri
+  # `needs: []` makes the manual job playable as soon as the pipeline exists,
+  # instead of after lint/test/e2e — the point of this job is the bundle, not
+  # the suite before it.
+  needs: []
   variables:
     RELEASE_DRY_RUN: "true"
   rules:
     - if: '$CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH'
+      when: manual
+      allow_failure: true
+    # Debug lane: push this branch and play the job to iterate on the bundle
+    # without waiting for (or gating on) the main pipeline.
+    - if: '$CI_COMMIT_BRANCH == "ci/release-dry-run"'
       when: manual
       allow_failure: true
