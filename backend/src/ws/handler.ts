@@ -31,10 +31,10 @@ import {
   importAllData,
   regenerateMessage,
   getPersonas,
-  PersonaRow,
   UserRow,
 } from '../storage/db.js';
 import { ConversationImportSchema, UserMessagePayloadSchema } from '@ai-conv/types';
+import type { Persona } from '@ai-conv/types';
 import { ollama, abortStreamsForConversation, validateModel } from '../llm/ollama.js';
 import { getGpuInfo } from '../llm/gpuInfo.js';
 import { createToken, createUserWithToken, getUserFromToken, verifyToken } from '../auth.js';
@@ -94,6 +94,19 @@ function emitConversationList(io: Server, userId: string) {
   io.to(userRoom(userId)).emit('conversation:list', getConversations(userId));
 }
 
+/**
+ * Push the profile list only to loopback sockets. Profile names are a local
+ * surface: a remote (LAN) client must never receive the list of profiles on
+ * this machine, whether in response to a request or as a broadcast after a
+ * profile is created/deleted.
+ */
+function emitUsersListToLoopback(io: Server) {
+  const users = getUsers().map(publicUser);
+  for (const [, socket] of io.of('/').sockets) {
+    if (isLoopbackClient(socket)) socket.emit('users:list', users);
+  }
+}
+
 function syncUserPersonas(registry: AgentRegistry, userId: string): void {
   for (const persona of getPersonas(userId)) {
     const existing = registry.getPersona(persona.id, userId);
@@ -104,6 +117,71 @@ function syncUserPersonas(registry: AgentRegistry, userId: string): void {
       registry.updatePersona(persona.id, userId, persona);
     }
   }
+}
+
+const PERSONA_LIMITS = {
+  name: 60,
+  systemPrompt: 4000,
+  model: 120,
+  description: 200,
+  avatar: 4,
+} as const;
+
+const PERSONA_MAX_TEMPERATURE = 2;
+
+/**
+ * Trim and bound persona fields. persona:create and persona:update BOTH go
+ * through this so an update can never store values create would reject
+ * (out-of-range temperature, oversized name/prompt, blank required text).
+ * Only keys present on the input are returned, so updates stay partial.
+ */
+function sanitizePersonaFields(input: unknown): { fields: Partial<Persona>; error?: string } {
+  const fields: Partial<Persona> = {};
+  const data = (input && typeof input === 'object' ? input : {}) as Record<string, unknown>;
+
+  if (data.name !== undefined) {
+    const name = String(data.name).trim();
+    if (!name) return { fields, error: 'Persona name is required' };
+    fields.name = name.slice(0, PERSONA_LIMITS.name);
+  }
+
+  if (data.systemPrompt !== undefined) {
+    const systemPrompt = String(data.systemPrompt).trim();
+    if (!systemPrompt) return { fields, error: 'System prompt is required' };
+    fields.systemPrompt = systemPrompt.slice(0, PERSONA_LIMITS.systemPrompt);
+  }
+
+  if (data.model !== undefined) {
+    const model = String(data.model).trim();
+    // An empty model means "not chosen yet": create auto-detects the first
+    // installed model and update leaves the existing one untouched.
+    if (model) fields.model = model.slice(0, PERSONA_LIMITS.model);
+  }
+
+  if (data.temperature !== undefined) {
+    const temperature = typeof data.temperature === 'number' ? data.temperature : Number(data.temperature);
+    if (!Number.isFinite(temperature)) {
+      return { fields, error: 'Temperature must be a number between 0 and 2' };
+    }
+    fields.temperature = Math.min(PERSONA_MAX_TEMPERATURE, Math.max(0, temperature));
+  }
+
+  if (data.enabled !== undefined) fields.enabled = data.enabled !== false;
+  if (data.enabledTools !== undefined) fields.enabledTools = data.enabledTools === true;
+
+  if (data.description !== undefined) {
+    fields.description = data.description == null
+      ? undefined
+      : String(data.description).slice(0, PERSONA_LIMITS.description);
+  }
+
+  if (data.avatar !== undefined) {
+    fields.avatar = data.avatar == null
+      ? undefined
+      : String(data.avatar).slice(0, PERSONA_LIMITS.avatar);
+  }
+
+  return { fields };
 }
 
 export function setupSocketHandler(io: Server, registry: AgentRegistry) {
@@ -128,7 +206,9 @@ export function setupSocketHandler(io: Server, registry: AgentRegistry) {
       socket.join(userRoom(socket.user.id));
       syncUserPersonas(registry, socket.user.id);
       socket.emit('user:current', publicUser(socket.user));
-      socket.emit('users:list', getUsers().map(publicUser));
+      // Local-only surface: remote clients get their own identity via
+      // user:current and must not learn the other profile names.
+      if (isLoopbackClient(socket)) socket.emit('users:list', getUsers().map(publicUser));
       socket.emit('personas:list', registry.getAllPersonas(socket.user.id));
       socket.emit('conversation:list', getConversations(socket.user.id));
     }
@@ -193,6 +273,10 @@ export function setupSocketHandler(io: Server, registry: AgentRegistry) {
     socket.on('users:list', (ack?: Ack) => {
       const user = requireUser(socket, ack);
       if (!user) return;
+      if (!isLoopbackClient(socket)) {
+        emitAuthError(socket, ack, 'Profile listing is only available locally');
+        return;
+      }
       ack?.(getUsers().map(publicUser));
     });
 
@@ -201,12 +285,17 @@ export function setupSocketHandler(io: Server, registry: AgentRegistry) {
     // token. Remote clients are REJECTED here — leaking profile names to the
     // whole LAN would be a real vulnerability, not a convenience.
     socket.on('users:list:bootstrap', (ack?: Ack) => {
-      if (!socket.user && !isLoopbackClient(socket)) {
-        emitAuthError(socket, ack);
+      // Same local-only rule as users:list. Anonymous loopback callers keep the
+      // recovery path; authenticated remote callers are rejected too.
+      if (!isLoopbackClient(socket)) {
+        emitAuthError(
+          socket,
+          ack,
+          socket.user ? 'Profile listing is only available locally' : 'Authentication required',
+        );
         return;
       }
-      // Authenticated callers and anonymous loopback recovery alike get the
-      // profile list (names/ids only — publicUser strips everything else).
+      // publicUser strips everything except id/name/avatar/createdAt.
       ack?.(getUsers().map(publicUser));
     });
 
@@ -242,7 +331,7 @@ export function setupSocketHandler(io: Server, registry: AgentRegistry) {
         socket.join(userRoom(user.id));
         syncUserPersonas(registry, user.id);
         socket.emit('user:current', publicUser(user));
-        socket.emit('users:list', getUsers().map(publicUser));
+        if (isLoopbackClient(socket)) socket.emit('users:list', getUsers().map(publicUser));
         socket.emit('personas:list', registry.getAllPersonas(user.id));
         socket.emit('conversation:list', getConversations(user.id));
         ack?.({ ok: true, user: publicUser(user), token });
@@ -260,7 +349,16 @@ export function setupSocketHandler(io: Server, registry: AgentRegistry) {
         emitAuthError(socket, ack);
         return;
       }
-      const selected = getUser(String(id));
+      const targetId = String(id ?? '');
+      // user:select mints a fresh token, so switching profiles is a LOCAL
+      // operation (the lock screen's profile picker). A remote token holder
+      // may only re-select the profile it is already bound to; anything else
+      // would hand over another profile's conversations and personas.
+      if (!isLoopback && socket.user && targetId !== socket.user.id) {
+        emitAuthError(socket, ack, 'Only the active profile can be selected remotely');
+        return;
+      }
+      const selected = getUser(targetId);
       if (!selected) {
         emitAuthError(socket, ack, 'User not found');
         return;
@@ -275,7 +373,7 @@ export function setupSocketHandler(io: Server, registry: AgentRegistry) {
       socket.join(userRoom(selected.id));
       syncUserPersonas(registry, selected.id);
       socket.emit('user:current', publicUser(selected));
-      socket.emit('users:list', getUsers().map(publicUser));
+      if (isLoopbackClient(socket)) socket.emit('users:list', getUsers().map(publicUser));
       socket.emit('personas:list', registry.getAllPersonas(selected.id));
       socket.emit('conversation:list', getConversations(selected.id));
       ack?.({ ok: true, user: publicUser(selected), token });
@@ -284,7 +382,17 @@ export function setupSocketHandler(io: Server, registry: AgentRegistry) {
     socket.on('user:delete', (id: string, ack?: Ack) => {
       const user = requireUser(socket, ack);
       if (!user) return;
-      const targetId = String(id);
+      const targetId = String(id ?? '');
+      // Profile management is a LOCAL operation: the lock screen lists every
+      // local profile and may delete any of them. A remote client may only
+      // delete the profile it is authenticated as — otherwise any token
+      // holder on the network could wipe another profile's conversations and
+      // personas. Checked before the lookup so remote callers cannot probe
+      // which profile ids exist.
+      if (targetId !== user.id && !isLoopbackClient(socket)) {
+        emitAuthError(socket, ack, 'Only the active profile can be deleted remotely');
+        return;
+      }
       const targetUser = getUser(targetId);
       if (!targetUser) {
         ack?.({ ok: false, error: 'User not found' });
@@ -303,7 +411,7 @@ export function setupSocketHandler(io: Server, registry: AgentRegistry) {
         socket.user = undefined;
         socket.data.authToken = undefined;
       }
-      io.emit('users:list', getUsers().map(publicUser));
+      emitUsersListToLoopback(io);
       ack?.({ ok: deleted });
     });
 
@@ -621,7 +729,12 @@ export function setupSocketHandler(io: Server, registry: AgentRegistry) {
           ack?.({ ok: false, error: 'Rate limit exceeded' });
           return;
         }
-        let model = typeof data?.model === 'string' ? data.model.trim().slice(0, 120) : '';
+        const { fields, error } = sanitizePersonaFields(data);
+        if (error) {
+          ack?.({ ok: false, error });
+          return;
+        }
+        let model = fields.model ?? '';
         if (model) {
           const validation = await validateModel(model);
           if (!validation.valid) {
@@ -636,8 +749,8 @@ export function setupSocketHandler(io: Server, registry: AgentRegistry) {
           ack?.({ ok: false, error: 'No models installed' });
           return;
         }
-        const name = String(data?.name || '').trim();
-        const systemPrompt = String(data?.systemPrompt || '').trim();
+        const name = fields.name;
+        const systemPrompt = fields.systemPrompt;
         if (!name || !systemPrompt) {
           ack?.({ ok: false, error: 'Persona name and system prompt are required' });
           return;
@@ -645,14 +758,14 @@ export function setupSocketHandler(io: Server, registry: AgentRegistry) {
 
         const row = createPersonaRow({
           id: randomUUID(),
-          name: name.slice(0, 60),
+          name,
           model,
-          systemPrompt: systemPrompt.slice(0, 4000),
-          temperature: Math.min(2, Math.max(0, Number(data?.temperature ?? 0.7))),
-          enabled: data?.enabled !== false,
-          enabledTools: data?.enabledTools === true,
-          description: data?.description ? String(data.description).slice(0, 200) : undefined,
-          avatar: data?.avatar ? String(data.avatar).slice(0, 4) : undefined,
+          systemPrompt,
+          temperature: fields.temperature ?? 0.7,
+          enabled: fields.enabled ?? true,
+          enabledTools: fields.enabledTools ?? false,
+          description: fields.description,
+          avatar: fields.avatar,
           userId: user.id,
         }, user.id);
         const AgentClass = row.enabledTools ? ToolEnabledDefaultAgent : DefaultAgent;
@@ -665,22 +778,32 @@ export function setupSocketHandler(io: Server, registry: AgentRegistry) {
       }
     });
 
-    socket.on('persona:update', async ({ id, patch }: { id: string; patch: Partial<PersonaRow> }, ack?: Ack) => {
+    socket.on('persona:update', async (payload: unknown, ack?: Ack) => {
       const user = requireUser(socket, ack);
       if (!user) return;
-      const existing = registry.getPersona(String(id), user.id);
+      const { id, patch } = (payload && typeof payload === 'object' ? payload : {}) as {
+        id?: unknown;
+        patch?: unknown;
+      };
+      const personaId = String(id ?? '');
+      const existing = registry.getPersona(personaId, user.id);
       if (!existing) {
         ack?.({ ok: false, error: 'Persona not found' });
         return;
       }
-      if (patch.model) {
-        const validation = await validateModel(patch.model);
+      const { fields, error } = sanitizePersonaFields(patch);
+      if (error) {
+        ack?.({ ok: false, error });
+        return;
+      }
+      if (fields.model) {
+        const validation = await validateModel(fields.model);
         if (!validation.valid) {
           ack?.({ ok: false, error: validation.error, availableModels: validation.availableModels });
           return;
         }
       }
-      const row = updatePersonaRow(String(id), user.id, patch);
+      const row = updatePersonaRow(personaId, user.id, fields);
       if (!row) {
         ack?.({ ok: false, error: 'Persona not found' });
         return;
