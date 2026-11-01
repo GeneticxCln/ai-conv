@@ -388,6 +388,10 @@ release:tauri:
 # publishing anything.
 release:tauri:dry-run:
   extends: release:tauri
+  # `needs: []` makes the manual job playable as soon as the pipeline exists,
+  # instead of after lint/test/e2e — the point of this job is the bundle, not
+  # the suite before it.
+  needs: []
   variables:
     RELEASE_DRY_RUN: "true"
   rules:
