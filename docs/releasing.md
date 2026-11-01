@@ -26,10 +26,25 @@ npx @tauri-apps/cli signer generate -w src-tauri/keys/aiconv.key --password "" -
 
 ## 3. Publishing a release
 
+The version must match in three places — CI (`scripts/check-version-sync.mjs`)
+fails the release job when they disagree, and the updater would loop forever if
+the built app reported a version different from `latest.json`:
+
 ```bash
-npm version patch          # bumps root + creates v0.x.y git tag
-git push --follow-tags     # .gitlab-ci.yml release:tauri job takes over
+NEW=0.2.1
+npm pkg set version=$NEW
+npm pkg set version=$NEW --workspace=backend
+npm pkg set version=$NEW --workspace=frontend
+npm pkg set version=$NEW --workspace=packages/types
+# then set "version" in src-tauri/tauri.conf.json to the same $NEW
+node scripts/check-version-sync.mjs        # verifies package.json vs tauri.conf.json
+git commit -am "release: v$NEW"
+git tag "v$NEW"
+git push --follow-tags                     # .gitlab-ci.yml release:tauri job takes over
 ```
+
+`TAURI_SIGNING_PRIVATE_KEY` must be present (protected variable), otherwise the
+release job refuses to build unsigned updater artifacts.
 
 The `release:tauri` job builds the signed bundle and publishes to GitLab:
 
