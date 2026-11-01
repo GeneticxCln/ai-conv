@@ -46,6 +46,18 @@ git push --follow-tags                     # .gitlab-ci.yml release:tauri job ta
 `TAURI_SIGNING_PRIVATE_KEY` must be present (protected variable), otherwise the
 release job refuses to build unsigned updater artifacts.
 
+Before cutting a tag, prove the job on `main` without publishing anything:
+
+```bash
+glab api --method POST "projects/:id/pipeline" \
+  -f ref=main -f 'variables[][key]=RELEASE_DRY_RUN' -f 'variables[][value]=true'
+```
+
+That run builds and signs the bundle, lists the outputs, and exits before the
+upload and Release steps — nothing is published to the package registry and no
+Release is created. A passed dry run means the tagged run has nothing left to
+prove except the tag itself.
+
 The `release:tauri` job builds the signed bundle and publishes to GitLab:
 
 - `AI.Conv_0.x.y_amd64.{deb,rpm}` — installers
