@@ -418,15 +418,24 @@ test.describe('AI Conv core flows', () => {
 
     // Reveal the action buttons (opacity-0 until group hover) and regenerate.
     await bubbles.last().hover();
+
+    // Hold the current bubble's DOM node. Regeneration deletes the message,
+    // which unmounts that node, then streams a replacement. Asserting the old
+    // node detaches is deterministic; the previous `toHaveCount(0)` check
+    // raced the replacement: on a warm small model the delete + first token
+    // land inside one locator poll interval, so the transient empty state was
+    // never observed and the assertion timed out.
+    const oldBubble = await bubbles.last().elementHandle();
+    expect(oldBubble).not.toBeNull();
     await page.getByTitle('Regenerate').click();
+    await expect
+      .poll(() => oldBubble!.evaluate((el) => el.isConnected), { timeout: 30_000 })
+      .toBe(false);
 
-    // The old message is deleted first — the bubble must vanish entirely
-    // before the new stream begins (content is empty while streaming, so
-    // .markdown-body does not exist).
-    await expect(bubbles).toHaveCount(0, { timeout: 30_000 });
-
-    // The replacement stream completes and a fresh bubble appears.
-    await waitForAgentResponse(page);
+    // The replacement stream completes in a fresh bubble that is still mounted.
+    const freshBubble = await waitForAgentResponse(page);
+    const freshHandle = await freshBubble.elementHandle();
+    expect(await freshHandle!.evaluate((el) => el.isConnected)).toBe(true);
     await expect(bubbles).toHaveCount(1);
 
     // The new message renders a timestamp of its own.
