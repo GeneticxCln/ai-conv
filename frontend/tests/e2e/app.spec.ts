@@ -25,6 +25,16 @@ test.describe('AI Conv core flows', () => {
   // Open the persona modal, fill it in, pick the fastest installed chat-capable
   // model (never hardcoded), and create the persona.
   async function createPersona(page: Page, name: string, systemPrompt: string) {
+    const personaButton = page
+      .getByRole('button', { name: new RegExp(`${name}$`) })
+      .first();
+
+    // Retries (and repeated runs) reuse the same profile and database. Reuse
+    // an existing persona instead of creating a duplicate chip: duplicates
+    // make every name-based locator ambiguous and fail in strict mode.
+    await personaButton.waitFor({ state: 'visible', timeout: 2000 }).catch(() => undefined);
+    if (await personaButton.isVisible()) return;
+
     // The persona bar shows a round + (personas exist) or a ghost button
     // (empty state) — both open the same modal.
     await page.getByRole('button', { name: /New persona|Create your first persona/ }).click();
@@ -47,7 +57,7 @@ test.describe('AI Conv core flows', () => {
       });
     }
     await page.getByRole('button', { name: 'Create', exact: true }).click();
-    await expect(page.getByRole('button', { name: new RegExp(name) })).toBeVisible();
+    await expect(personaButton).toBeVisible();
   }
 
   // Wait for the agent's streamed response. Agent bubbles render inside
@@ -212,6 +222,11 @@ test.describe('AI Conv core flows', () => {
 
     const codeBlock = page.getByTestId('markdown-code-block');
     await expect(codeBlock).toBeVisible({ timeout: 120_000 });
+    // A code block becomes visible as soon as its opening fence streams in.
+    // Wait for generation to finish (and the content to be complete) before
+    // copying, otherwise the clipboard holds a partial block.
+    await expect(page.getByRole('button', { name: 'Stop generating' })).toBeHidden({ timeout: 120_000 });
+    await expect(codeBlock).toContainText('const copiedValue = "clipboard";');
     await expect(codeBlock).toHaveAttribute('data-language', 'JavaScript');
     await expect(codeBlock.getByText('JavaScript', { exact: true })).toBeVisible();
     await expect(codeBlock).toHaveClass(/bg-gray-50/);
