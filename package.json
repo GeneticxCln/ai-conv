@@ -1,6 +1,6 @@
 {
   "name": "ai-conv",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "private": true,
   "workspaces": [
     "backend",
@@ -33,5 +33,10 @@
   "description": "A real-time desktop (Tauri) messenger where **you create your own AI personas** — powered by local LLMs via Ollama. No hard-coded personas, no hard-coded models.",
   "main": "index.js",
   "keywords": [],
-  "type": "commonjs"
+  "type": "commonjs",
+  "overrides": {
+    "@fastify/static": {
+      "glob": "14.0.3"
+    }
+  }
 }
