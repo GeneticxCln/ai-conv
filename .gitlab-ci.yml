@@ -313,7 +313,9 @@ release:tauri:
         echo "TAURI_SIGNING_PRIVATE_KEY is not set — updater artifacts would be unsigned" >&2
         exit 1
       fi
-    - npm run tauri:build -- --cli --verbose
+    # --verbose is opt-in: it is what prints linuxdeploy's child-process
+    # error, but it also dumps every rustls/cargo debug line into the log.
+    - npm run tauri:build -- --cli ${TAURI_VERBOSE:+--verbose}
     - echo "--- bundle outputs ---" && find src-tauri/target/release/bundle -type f | sort
     # Dry run: `main` + RELEASE_DRY_RUN=true proves the whole build/sign path
     # without publishing. Stops here, before anything leaves the runner.
@@ -394,6 +396,8 @@ release:tauri:dry-run:
   needs: []
   variables:
     RELEASE_DRY_RUN: "true"
+    # Keep the verbose bundler output on the dry-run lane only.
+    TAURI_VERBOSE: "1"
   rules:
     - if: '$CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH'
       when: manual

@@ -74,6 +74,29 @@ fs.cpSync(workspaceNodeModules, bundledNodeModules, {
 });
 console.log('Copied workspace runtime dependencies');
 
+// linuxdeploy (AppImage bundling) walks every ELF in the app and aborts the
+// whole bundle when it cannot resolve a dependency. better-sqlite3 ships a
+// musl prebuild next to the glibc one; the musl binary needs
+// libc.musl-x86_64.so.1, which glibc distros do not have, so the AppImage step
+// died with "Could not find dependency: libc.musl-x86_64.so.1". Musl artifacts
+// are unusable on a glibc host, so drop them from the bundle.
+function pruneMuslArtifacts(dir) {
+  for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+    const full = path.join(dir, entry.name);
+    if (/musl/i.test(entry.name)) {
+      fs.rmSync(full, { recursive: true, force: true });
+      console.log('  pruned musl artifact:', path.relative(RESOURCES, full));
+      continue;
+    }
+    if (entry.isDirectory()) pruneMuslArtifacts(full);
+  }
+}
+
+const glibcHost = process.platform === 'linux' && Boolean(
+  process.report?.getReport?.().header?.glibcVersionRuntime,
+);
+if (glibcHost) pruneMuslArtifacts(bundledNodeModules);
+
 // Copy @ai-conv/types directly into node_modules after the dependency copy
 // because workspace links are intentionally excluded above.
 const TYPES_SRC = path.join(ROOT, 'packages', 'types');
