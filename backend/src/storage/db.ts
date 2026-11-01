@@ -126,7 +126,9 @@ export function getUsers(): UserRow[] {
 }
 
 export function getUser(id: string): UserRow | null {
-  return db.prepare('SELECT id, name, avatar, created_at FROM users WHERE id = ?').get(id) as UserRow | null;
+  // better-sqlite3's .get() returns undefined when no row matches; the
+  // declared contract (and every `!== null` caller) expects null.
+  return (db.prepare('SELECT id, name, avatar, created_at FROM users WHERE id = ?').get(id) as UserRow | undefined) ?? null;
 }
 
 export function createUser(name: string, avatar?: string): UserRow {

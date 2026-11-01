@@ -64,7 +64,9 @@ if [ "$USE_TAURI_CLI" = true ]; then
   # for local dev/test runs only.
   BUNDLE_ARGS=()
   if [ "$NO_BUNDLE" = true ]; then BUNDLE_ARGS+=(--no-bundle); fi
-  npx @tauri-apps/cli build "${BUNDLE_ARGS[@]}"
+  # Pin the CLI major and answer the install prompt: on a CI runner npx has no
+  # TTY to confirm with, and unpinned it can fetch a future major.
+  npx --yes @tauri-apps/cli@2 build "${BUNDLE_ARGS[@]}"
 else
   cargo build --release --manifest-path src-tauri/Cargo.toml
 fi

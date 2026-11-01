@@ -18,7 +18,9 @@ export default defineConfig({
   forbidOnly: !!process.env.CI,
   retries: process.env.CI ? 2 : 0,
   workers: 1,
-  reporter: process.env.CI ? 'github' : 'list',
+  // The GitHub reporter emits ::error annotations that GitLab renders as
+  // literal text; only use it on GitHub Actions.
+  reporter: process.env.GITHUB_ACTIONS === 'true' ? 'github' : 'list',
   outputDir: 'test-results',
   use: {
     baseURL: frontendURL,
