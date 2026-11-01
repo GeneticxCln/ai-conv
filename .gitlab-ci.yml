@@ -230,7 +230,12 @@ docker:build:
         sh -c 'cd /tmp && npm i --no-save --no-fund --no-audit --silent socket.io-client@4 >/dev/null && cp /scripts/docker-local-client-smoke.cjs . && node docker-local-client-smoke.cjs http://smoke-trusted:3001 http://smoke-untrusted:3001' \
         || { docker logs smoke-trusted 2>&1 | tail -40; docker logs smoke-untrusted 2>&1 | tail -40; exit 1; }
     # Build-only validation on MRs/main; nothing is pushed anywhere.
-    - docker rmi "$IMAGE_BACKEND" "$IMAGE_FRONTEND"
+    # The smoke containers still reference these images, and `docker rmi`
+    # refuses to remove an image a container holds — remove them first.
+    - |
+      docker rm -f smoke-trusted smoke-untrusted > /dev/null 2>&1 || true
+      docker network rm ai-conv-smoke > /dev/null 2>&1 || true
+      docker rmi "$IMAGE_BACKEND" "$IMAGE_FRONTEND"
   rules:
     # Docker build is slow; run it on main and MRs, skip for plain branch pushes.
     - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
