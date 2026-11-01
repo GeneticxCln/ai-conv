@@ -310,6 +310,13 @@ release:tauri:
       fi
     - npm run tauri:build -- --cli
     - echo "--- bundle outputs ---" && find src-tauri/target/release/bundle -type f | sort
+    # Dry run: `main` + RELEASE_DRY_RUN=true proves the whole build/sign path
+    # without publishing. Stops here, before anything leaves the runner.
+    - |
+      if [ "${RELEASE_DRY_RUN:-}" = "true" ]; then
+        echo "RELEASE_DRY_RUN=true — bundle built and signed; skipping uploads and Release creation"
+        exit 0
+      fi
     # Upload every bundle artifact (installers + updater tarballs + sigs) to
     # the generic package registry. JOB-TOKEN authenticates uploads.
     - |
@@ -364,4 +371,8 @@ release:tauri:
       echo "release created"
   rules:
     - if: '$CI_COMMIT_TAG =~ /^v/'
+    # Dry run before cutting a tag: a main pipeline started with
+    # RELEASE_DRY_RUN=true builds and signs the bundle, then stops before
+    # uploading or creating a Release (docs/releasing.md).
+    - if: '$RELEASE_DRY_RUN == "true" && $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH'
   timeout: 60m
