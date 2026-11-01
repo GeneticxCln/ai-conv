@@ -1,6 +1,6 @@
 [package]
 name = "ai-conv"
-version = "0.1.0"
+version = "0.2.0"
 description = "AI Conv — Multi-Persona AI Messenger (local-first, Ollama-powered)"
 authors = ["AI Conv Team"]
 edition = "2021"

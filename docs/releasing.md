@@ -26,7 +26,7 @@ npx @tauri-apps/cli signer generate -w src-tauri/keys/aiconv.key --password "" -
 
 ## 3. Publishing a release
 
-The version must match in three places — CI (`scripts/check-version-sync.mjs`)
+The version must match in four places — CI (`scripts/check-version-sync.mjs`)
 fails the release job when they disagree, and the updater would loop forever if
 the built app reported a version different from `latest.json`:
 
@@ -36,8 +36,9 @@ npm pkg set version=$NEW
 npm pkg set version=$NEW --workspace=backend
 npm pkg set version=$NEW --workspace=frontend
 npm pkg set version=$NEW --workspace=packages/types
-# then set "version" in src-tauri/tauri.conf.json to the same $NEW
-node scripts/check-version-sync.mjs        # verifies package.json vs tauri.conf.json
+# then set "version" in src-tauri/tauri.conf.json AND src-tauri/Cargo.toml
+# (Cargo.lock picks the new crate version up on the next cargo build)
+node scripts/check-version-sync.mjs        # package.json vs tauri.conf.json vs Cargo.toml
 git commit -am "release: v$NEW"
 git tag "v$NEW"
 git push --follow-tags                     # .gitlab-ci.yml release:tauri job takes over
