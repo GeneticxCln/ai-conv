@@ -215,7 +215,8 @@ docker:build:
       docker network create ai-conv-smoke
       SUBNET=$(docker network inspect ai-conv-smoke -f '{{range .IPAM.Config}}{{.Subnet}}{{end}}')
       echo "smoke network subnet: $SUBNET"
-      SMOKE_JWT="$(node -e "process.stdout.write(require('crypto').randomBytes(32).toString('hex'))")"
+      # Throwaway containers only — the image has no node to mint a real one.
+      SMOKE_JWT="smoke-only-not-a-real-secret-0123456789abcdef0123456789abcdef"
       docker run -d --name smoke-trusted --network ai-conv-smoke \
         -e JWT_SECRET="$SMOKE_JWT" -e DATABASE_PATH=/tmp/smoke.db \
         -e LOCAL_CLIENT_CIDRS="$SUBNET" "$IMAGE_BACKEND"
