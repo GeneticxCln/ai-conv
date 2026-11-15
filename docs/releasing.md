@@ -60,9 +60,10 @@ prove except the tag itself.
 
 The `release:tauri` job builds the signed bundle and publishes to GitLab:
 
-- `AI.Conv_0.x.y_amd64.{deb,rpm}` — installers
-- `ai-conv_0.x.y_amd64.AppImage` — portable build
-- `ai-conv_0.x.y_amd64.AppImage.tar.gz` + `.sig` — **updater artifacts**
+- `AI_Conv_0.x.y_amd64.deb` / `AI_Conv-0.x.y-1.x86_64.rpm` — installers
+- `AI_Conv_0.x.y_amd64.AppImage` — portable build
+- `AI_Conv_0.x.y_amd64.AppImage` + `.AppImage.sig` — **updater artifacts**
+- `AI-Conv-0.x.y-linux-x86_64.tar.gz` — portable archive
 - `latest.json` — the manifest the running app polls
 
 All artifacts are uploaded to the **generic package registry**

@@ -246,7 +246,7 @@ docker:build:
 # Ported from .github/workflows/release.yml. Steps:
 #   1. Frontend → dist-tauri, backend rebundled, sidecar built (build-tauri.sh)
 #   2. `tauri build` with the minisign key from the TAURI_SIGNING_PRIVATE_KEY
-#      CI variable → signed updater artifacts (AppImage.tar.gz + .sig)
+#      CI variable → signed updater artifacts (AppImage + .sig)
 #   3. Artifacts + latest.json uploaded to the generic package registry
 #   4. GitLab Release created with asset links; the updater permalink
 #      (.../-/releases/permalink/latest/downloads/latest.json) then serves it
@@ -327,8 +327,7 @@ release:tauri:
       cp "$BUNDLE_DIR"/deb/*.deb "$ASSETS_DIR"/
       cp "$BUNDLE_DIR"/rpm/*.rpm "$ASSETS_DIR"/
       cp "$BUNDLE_DIR"/appimage/*.AppImage "$ASSETS_DIR"/
-      cp "$BUNDLE_DIR"/appimage/*.AppImage.tar.gz "$ASSETS_DIR"/
-      cp "$BUNDLE_DIR"/appimage/*.AppImage.tar.gz.sig "$ASSETS_DIR"/
+      cp "$BUNDLE_DIR"/appimage/*.AppImage.sig "$ASSETS_DIR"/
       cp "$BUNDLE_DIR"/AI-Conv-*.tar.gz "$ASSETS_DIR"/
       for f in "$ASSETS_DIR"/*; do
         safe=$(basename "$f" | tr ' ' '_')
@@ -360,10 +359,10 @@ release:tauri:
       VER="${CI_COMMIT_TAG#v}"
       BASE="${CI_API_V4_URL}/projects/${CI_PROJECT_ID}/packages/generic/ai-conv-desktop/${CI_COMMIT_TAG}"
       ASSETS_DIR="$CI_PROJECT_DIR/release-assets"
-      APPIMG_TGZ=$(find "$ASSETS_DIR" -maxdepth 1 -name '*.AppImage.tar.gz' | head -1)
-      APPIMG_SIG=$(find "$ASSETS_DIR" -maxdepth 1 -name '*.AppImage.tar.gz.sig' | head -1)
-      [ -n "$APPIMG_TGZ" ] && [ -n "$APPIMG_SIG" ] || { echo "updater artifacts missing" >&2; exit 1; }
-      DL="$BASE/$(basename "$APPIMG_TGZ")"
+      APPIMG=$(find "$ASSETS_DIR" -maxdepth 1 -name '*.AppImage' | head -1)
+      APPIMG_SIG=$(find "$ASSETS_DIR" -maxdepth 1 -name '*.AppImage.sig' | head -1)
+      [ -n "$APPIMG" ] && [ -n "$APPIMG_SIG" ] || { echo "updater AppImage/signature missing" >&2; exit 1; }
+      DL="$BASE/$(basename "$APPIMG")"
       SIG_B64=$(base64 -w0 "$APPIMG_SIG")
       jq -n --arg ver "$VER" --arg url "$DL" --arg sig "$SIG_B64" '{version:$ver, notes:("AI Conv " + $ver), platforms:{"linux-x86_64":{signature:$sig, url:$url}}}' > latest.json
       curl --fail --silent --show-error --header "JOB-TOKEN: ${CI_JOB_TOKEN}" --upload-file latest.json "$BASE/latest.json" > /dev/null
