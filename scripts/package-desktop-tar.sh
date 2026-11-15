@@ -22,7 +22,16 @@ fi
 [ -n "$SIDECAR" ] && [ -f "$SIDECAR" ] || { echo "missing sidecar binary" >&2; exit 1; }
 
 RESOURCES="$RELEASE_DIR/resources"
-[ -d "$RESOURCES" ] || { echo "missing $RESOURCES — run the Tauri build first" >&2; exit 1; }
+if [ ! -d "$RESOURCES" ]; then
+  # `tauri build` stages resources under src-tauri/resources on CI; the
+  # target/release copy only exists after a plain cargo build.
+  RESOURCES="src-tauri/resources"
+  echo "using staged resources at $RESOURCES"
+fi
+[ -d "$RESOURCES" ] || { echo "missing staged resources — run the Tauri build first" >&2; exit 1; }
+for part in backend frontend-dist; do
+  [ -d "$RESOURCES/$part" ] || { echo "missing $RESOURCES/$part" >&2; exit 1; }
+done
 
 mkdir -p "$STAGE/$NAME" "$OUT_DIR"
 cp "$BIN" "$STAGE/$NAME/ai-conv"
