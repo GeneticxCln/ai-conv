@@ -36,7 +36,7 @@ import {
 } from '../storage/db.js';
 import { ConversationImportSchema, UserMessagePayloadSchema } from '@ai-conv/types';
 import type { Persona } from '@ai-conv/types';
-import { ollama, abortStreamsForConversation, validateModel } from '../llm/ollama.js';
+import { ollama, abortStreamsForConversation, validateModel, findChatModel } from '../llm/ollama.js';
 import { getGpuInfo } from '../llm/gpuInfo.js';
 import { createToken, createUserWithToken, getUserFromToken, verifyToken } from '../auth.js';
 import {
@@ -507,7 +507,7 @@ export function setupSocketHandler(io: Server, registry: AgentRegistry) {
 
         const history = getMessages(conversationId, user.id);
         if (conversation.title === 'New Conversation') {
-          dbRenameConversation(conversationId, user.id, content.slice(0, 60));
+          dbRenameConversation(conversationId, user.id, content.trim().slice(0, 60));
         }
         updateConversationTimestamp(conversationId, user.id);
 
@@ -779,8 +779,7 @@ export function setupSocketHandler(io: Server, registry: AgentRegistry) {
             return;
           }
         } else {
-          const listed = await ollama.list();
-          model = listed.models[0]?.name || '';
+          model = (await findChatModel()) || '';
         }
         if (!model) {
           ack?.({ ok: false, error: 'No models installed' });
@@ -895,9 +894,19 @@ export function setupSocketHandler(io: Server, registry: AgentRegistry) {
       ack?.(conversations);
     });
 
-    socket.on('conversation:create', async (title?: string | null, ack?: Ack) => {
+    socket.on('conversation:create', async (title?: unknown, ack?: Ack) => {
+      // Support emit('conversation:create', ack): socket.io passes a lone
+      // callback as the first argument when the event has no payload.
+      if (typeof title === 'function') {
+        ack = title as Ack;
+        title = undefined;
+      }
       const user = requireUser(socket, ack);
       if (!user) return;
+      if (title !== undefined && title !== null && typeof title !== 'string') {
+        ack?.({ ok: false, error: 'Title must be a string' });
+        return;
+      }
       if (!(await checkCreateRateLimit(socket.id))) {
         ack?.({ ok: false, error: 'Rate limit exceeded' });
         return;
@@ -923,10 +932,22 @@ export function setupSocketHandler(io: Server, registry: AgentRegistry) {
       ack?.({ ok: true });
     });
 
-    socket.on('conversation:rename', ({ id, title }: { id: string; title: string }, ack?: Ack) => {
+    socket.on('conversation:rename', (payload: unknown, ack?: Ack) => {
       const user = requireUser(socket, ack);
       if (!user) return;
-      const renamed = dbRenameConversation(String(id), user.id, String(title || ''));
+      const { id, title } = (payload && typeof payload === 'object' ? payload : {}) as {
+        id?: unknown;
+        title?: unknown;
+      };
+      if (typeof id !== 'string') {
+        ack?.({ ok: false, error: 'Conversation not found' });
+        return;
+      }
+      if (typeof title !== 'string' || !title.trim()) {
+        ack?.({ ok: false, error: 'Title cannot be empty' });
+        return;
+      }
+      const renamed = dbRenameConversation(id, user.id, title);
       if (!renamed) {
         ack?.({ ok: false, error: 'Conversation not found' });
         return;

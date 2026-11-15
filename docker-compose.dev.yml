@@ -19,7 +19,8 @@ services:
       - OLLAMA_HOST=http://ollama:11434
     # Keep local development model availability identical to CI and the
     # default compose stack: one small chat model plus one embedding model.
-    command: ["sh", "-c", "ollama pull qwen2.5:0.5b && ollama pull nomic-embed-text && ollama pull llama3.1:8b"]
+    entrypoint: ["/bin/sh", "-c"]
+    command: ["ollama pull qwen2.5:0.5b && ollama pull nomic-embed-text && ollama pull llama3.1:8b"]
     depends_on:
       ollama:
         condition: service_healthy

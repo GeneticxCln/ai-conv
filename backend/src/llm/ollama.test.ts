@@ -2,15 +2,18 @@ import { describe, expect, it, vi, beforeEach } from 'vitest';
 import type { Persona } from '@ai-conv/types';
 
 const chatMock = vi.fn();
+const listMock = vi.fn();
+const showMock = vi.fn();
 
 vi.mock('ollama', () => ({
   Ollama: class {
     chat = chatMock;
-    list = vi.fn();
+    list = listMock;
+    show = showMock;
   },
 }));
 
-const { streamChat } = await import('./ollama');
+const { streamChat, findChatModel } = await import('./ollama');
 
 const persona: Persona = {
   id: 'p1',
@@ -20,6 +23,40 @@ const persona: Persona = {
   temperature: 0.2,
   enabled: true,
 };
+
+describe('findChatModel', () => {
+  beforeEach(() => {
+    listMock.mockReset();
+    showMock.mockReset();
+  });
+
+  it('skips embedding-only models and picks the first chat-capable model', async () => {
+    listMock.mockResolvedValue({
+      models: [{ name: 'nomic-embed-text:latest' }, { name: 'qwen3:8b' }],
+    });
+    showMock.mockImplementation(async ({ model }: { model: string }) => ({
+      capabilities: model.startsWith('nomic') ? ['embedding'] : ['completion', 'tools'],
+    }));
+
+    await expect(findChatModel()).resolves.toBe('qwen3:8b');
+    expect(showMock).toHaveBeenCalledTimes(2);
+  });
+
+  it('keeps the first tag when the server does not expose capabilities', async () => {
+    listMock.mockResolvedValue({
+      models: [{ name: 'old:latest' }, { name: 'newer:latest' }],
+    });
+    showMock.mockRejectedValue(new Error('unknown endpoint'));
+
+    await expect(findChatModel()).resolves.toBe('old:latest');
+  });
+
+  it('returns null when no models are installed', async () => {
+    listMock.mockResolvedValue({ models: [] });
+
+    await expect(findChatModel()).resolves.toBeNull();
+  });
+});
 
 describe('streamChat', () => {
   beforeEach(() => chatMock.mockReset());

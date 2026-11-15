@@ -3,50 +3,78 @@ name: Release (Tauri desktop)
 on:
   push:
     tags: ['v*']
-  workflow_dispatch:
 
 permissions:
   contents: write
 
+env:
+  NODE_VERSION: '26'
+  # linuxdeploy is an AppImage tool; CI runners don't provide FUSE.
+  APPIMAGE_EXTRACT_AND_RUN: '1'
+  # linuxdeploy's strip step fails on modern glibc .relr.dyn sections.
+  NO_STRIP: 'true'
+
 jobs:
-  build-tauri:
+  build-release:
     runs-on: ubuntu-latest
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
 
       - uses: actions/setup-node@v4
         with:
-          node-version: 20
+          node-version: ${{ env.NODE_VERSION }}
           cache: npm
 
       - uses: dtolnay/rust-toolchain@stable
 
-      - name: Install Linux system deps (webkit2gtk, appindicator)
+      - name: Install Linux system deps
         run: |
           sudo apt-get update
-          sudo apt-get install -y libwebkit2gtk-4.1-dev libgtk-3-dev libayatana-appindicator3-dev librsvg2-dev patchelf
+          sudo apt-get install -y --no-install-recommends \
+            libwebkit2gtk-4.1-dev \
+            libgtk-3-dev \
+            libayatana-appindicator3-dev \
+            librsvg2-dev \
+            libxdo-dev \
+            libssl-dev \
+            build-essential \
+            pkg-config \
+            patchelf \
+            xdg-utils \
+            rpm \
+            file
 
-      - name: Install frontend deps
-        run: npm ci
+      - run: npm ci --legacy-peer-deps
+      - run: npm run build --workspace=packages/types
+      - run: npm run build --workspace=backend
 
-      - name: Build Tauri app (frontend + sidecar + Rust)
+      - name: Verify version matches the tag
         env:
-          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
-          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
-        run: npm run tauri:build -- --cli
+          CI_COMMIT_TAG: ${{ github.ref_name }}
+        run: node scripts/check-version-sync.mjs
 
-      # tauri-action uploads installers AND the signed updater artifacts
-      # (AppImage.tar.gz + .sig) and generates/updates latest.json on the
-      # release — the endpoint tauri.conf.json points at.
-      - name: Publish release + updater artifacts
-        uses: tauri-apps/tauri-action@v0
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
-          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+      # GitHub hosts unsigned packages. The GitLab release is the signed
+      # auto-update source, so no signing key is needed or stored here.
+      - name: Build unsigned Tauri bundles
+        run: npm run tauri:build -- --cli --no-updater
+
+      - name: Create portable tar.gz
+        run: bash scripts/package-desktop-tar.sh
+
+      - name: Publish GitHub release
+        uses: softprops/action-gh-release@v2
         with:
-          tagName: ${{ github.ref_name }}
-          releaseName: 'AI Conv ${{ github.ref_name }}'
-          releaseBody: 'See the assets to download and install this version.'
-          releaseDraft: false
-          prerelease: false
+          tag_name: ${{ github.ref_name }}
+          name: 'AI Conv ${{ github.ref_name }}'
+          body: |
+            Linux desktop packages built from ${{ github.ref_name }}.
+
+            Auto-updates are served by the GitLab release endpoint.
+          generate_release_notes: true
+          fail_on_unmatched_files: true
+          files: |
+            src-tauri/target/release/bundle/deb/*.deb
+            src-tauri/target/release/bundle/rpm/*.rpm
+            src-tauri/target/release/bundle/appimage/*.AppImage
+            src-tauri/target/release/bundle/AI-Conv-*.tar.gz

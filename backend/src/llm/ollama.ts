@@ -88,6 +88,39 @@ export async function validateModel(model: string): Promise<ValidateModelResult>
 }
 
 /**
+ * Pick the first installed model that supports chat completion.
+ *
+ * `ollama.list()` also returns embedding-only models (for example
+ * nomic-embed-text) in no guaranteed order, so using models[0] to
+ * auto-detect a persona model can produce a persona that can never reply.
+ * Capabilities are only exposed by `show()`. Models that report no
+ * capabilities (older Ollama servers) are assumed to be chat-capable.
+ */
+export async function findChatModel(): Promise<string | null> {
+  try {
+    const { models } = await ollama.list();
+    let fallback: string | null = null;
+
+    for (const listed of models) {
+      fallback ??= listed.name;
+      try {
+        const { capabilities } = await ollama.show({ model: listed.name });
+        if (!capabilities || capabilities.length === 0 || capabilities.includes('completion')) {
+          return listed.name;
+        }
+      } catch {
+        // show() is unavailable on some older servers — use the first tag.
+        return fallback;
+      }
+    }
+
+    return fallback;
+  } catch {
+    return null;
+  }
+}
+
+/**
  * Get list of all installed models.
  */
 export async function listModels(): Promise<string[]> {

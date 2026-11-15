@@ -34,7 +34,8 @@ services:
     # auto-selects the smallest chat model, so this keeps local compose runs
     # on the same model as CI (which pulls qwen2.5:0.5b only). llama3.1:8b is
     # a solid default for real chatting.
-    command: ["sh", "-c", "ollama pull qwen2.5:0.5b && ollama pull nomic-embed-text && ollama pull llama3.1:8b"]
+    entrypoint: ["/bin/sh", "-c"]
+    command: ["ollama pull qwen2.5:0.5b && ollama pull nomic-embed-text && ollama pull llama3.1:8b"]
     depends_on:
       ollama:
         condition: service_healthy

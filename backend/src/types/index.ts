@@ -49,7 +49,11 @@ export type Conversation = z.infer<typeof ConversationSchema>;
 // ============ Socket Events ============
 export const UserMessagePayloadSchema = z.object({
   conversationId: z.string().uuid(),
-  content: z.string(),
+  // The first message becomes the conversation title, so blank text would
+  // permanently blank the title. Reject empty and whitespace-only messages.
+  content: z.string().min(1).max(100000).refine((value) => value.trim().length > 0, {
+    message: 'Message cannot be empty',
+  }),
   agentChat: z.boolean().optional(),
   tempId: z.string().uuid().optional(),
 });

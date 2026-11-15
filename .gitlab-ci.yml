@@ -314,6 +314,7 @@ release:tauri:
         exit 1
       fi
     - npm run tauri:build -- --cli
+    - bash scripts/package-desktop-tar.sh
     - echo "--- bundle outputs ---" && find src-tauri/target/release/bundle -type f | sort
     # Dry run: `main` + RELEASE_DRY_RUN=true proves the whole build/sign path
     # without publishing. Stops here, before anything leaves the runner.
@@ -351,7 +352,7 @@ release:tauri:
       VER="${CI_COMMIT_TAG#v}"
       BASE="${CI_API_V4_URL}/projects/${CI_PROJECT_ID}/packages/generic/ai-conv-desktop/${CI_COMMIT_TAG}"
       BUNDLE_DIR="src-tauri/target/release/bundle"
-      ASSET_FILES=$(find "$BUNDLE_DIR" -type f \( -name '*.AppImage' -o -name '*.deb' -o -name '*.rpm' \))
+      ASSET_FILES=$(find "$BUNDLE_DIR" -type f \( -name '*.AppImage' -o -name '*.deb' -o -name '*.rpm' -o -name 'AI-Conv-*.tar.gz' \))
       # NOTE: the assignments must come BEFORE `node`, otherwise they are
       # argv entries and process.env.* is undefined (ASSET_FILES.split threw
       # on every tag pipeline).

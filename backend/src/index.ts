@@ -66,9 +66,20 @@ async function main() {
       // breaks the page until the backend is restarted.
       wildcard: true,
     });
-    // SPA fallback: serve index.html for any non-API, non-socket.io route.
+    // SPA fallback: serve index.html for client-side routes only. A missing
+    // asset or API route must stay a 404 — serving HTML with a 200 makes a
+    // stale bundle fail with an opaque MIME error instead.
     fastify.setNotFoundHandler((req, reply) => {
       if (req.url.startsWith('/socket.io/')) return;
+      const pathname = req.url.split('?')[0];
+      if (pathname.startsWith('/assets/')) {
+        reply.code(404).type('text/plain').send('Not found');
+        return;
+      }
+      if (pathname.startsWith('/api/') || path.extname(pathname) !== '') {
+        reply.code(404).send({ error: 'Not found' });
+        return;
+      }
       reply.sendFile('index.html');
     });
   } else {
@@ -107,6 +118,10 @@ async function main() {
     } catch (err) {
       console.warn('[Socket.io] Redis unavailable, running in standalone mode:', err instanceof Error ? err.message : String(err));
     }
+  }
+
+  if (!redisSubInstance) {
+    console.warn('[RateLimit] Redis is not active — rate limiting is DISABLED (local-dev fallback)');
   }
 
   // Initialize agent registry

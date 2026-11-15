@@ -1,6 +1,15 @@
 import { defineConfig } from 'vite';
 import react from '@vitejs/plugin-react';
-import path from 'path';
+import { readFileSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
+
+// Single source of truth for the version shown by the browser fallback in
+// Settings → About. The Tauri runtime reads the real app version instead.
+const APP_VERSION = (
+  JSON.parse(readFileSync(new URL('./package.json', import.meta.url), 'utf8')) as {
+    version: string;
+  }
+).version;
 
 // ── Proxy target ───────────────────────────────────────────────────
 // In Docker Compose the backend runs as `backend`; on a developer's
@@ -10,12 +19,11 @@ const BACKEND_TARGET =
   process.env.VITE_BACKEND_URL ||
   'http://localhost:3001';
 
-export default defineConfig(({ command }) => ({
-  // Strip console.* from production bundles (`vite build`); keep them in dev.
-  esbuild: {
-    drop: command === 'build' ? ['console'] : [],
-  },
+export default defineConfig(() => ({
   plugins: [react()],
+  define: {
+    __APP_VERSION__: JSON.stringify(APP_VERSION),
+  },
   build: {
     // outDir is env-driven. The packaged Electron app lives inside
     // frontend/dist (electron-builder output), so every other consumer must
@@ -30,7 +38,9 @@ export default defineConfig(({ command }) => ({
   base: './',
   resolve: {
     alias: {
-      '@': path.resolve(__dirname, './src'),
+      // import.meta.url avoids __dirname, which native ESM config loading
+      // no longer provides (Vite's future default).
+      '@': fileURLToPath(new URL('./src', import.meta.url)),
     },
   },
   server: {
