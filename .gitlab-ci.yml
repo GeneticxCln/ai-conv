@@ -315,7 +315,27 @@ release:tauri:
       fi
     - npm run tauri:build -- --cli
     - bash scripts/package-desktop-tar.sh
-    - echo "--- bundle outputs ---" && find src-tauri/target/release/bundle -type f | sort
+    # Stage only the final artifacts. The AppImage AppDir is an unpacked tree
+    # with thousands of files; logging or uploading it exhausts the job log and
+    # produces brittle package URLs.
+    - |
+      set -e
+      BUNDLE_DIR="src-tauri/target/release/bundle"
+      ASSETS_DIR="$CI_PROJECT_DIR/release-assets"
+      rm -rf "$ASSETS_DIR"
+      mkdir -p "$ASSETS_DIR"
+      cp "$BUNDLE_DIR"/deb/*.deb "$ASSETS_DIR"/
+      cp "$BUNDLE_DIR"/rpm/*.rpm "$ASSETS_DIR"/
+      cp "$BUNDLE_DIR"/appimage/*.AppImage "$ASSETS_DIR"/
+      cp "$BUNDLE_DIR"/appimage/*.AppImage.tar.gz "$ASSETS_DIR"/
+      cp "$BUNDLE_DIR"/appimage/*.AppImage.tar.gz.sig "$ASSETS_DIR"/
+      cp "$BUNDLE_DIR"/AI-Conv-*.tar.gz "$ASSETS_DIR"/
+      for f in "$ASSETS_DIR"/*; do
+        safe=$(basename "$f" | tr ' ' '_')
+        [ "$f" = "$ASSETS_DIR/$safe" ] || mv "$f" "$ASSETS_DIR/$safe"
+      done
+      echo "--- release assets ---"
+      ls -lh "$ASSETS_DIR"
     # Dry run: `main` + RELEASE_DRY_RUN=true proves the whole build/sign path
     # without publishing. Stops here, before anything leaves the runner.
     - |
@@ -323,25 +343,27 @@ release:tauri:
         echo "RELEASE_DRY_RUN=true — bundle built and signed; skipping uploads and Release creation"
         exit 0
       fi
-    # Upload every bundle artifact (installers + updater tarballs + sigs) to
-    # the generic package registry. JOB-TOKEN authenticates uploads.
+    # Upload the staged final artifacts (installers + updater files) to the
+    # generic package registry. JOB-TOKEN authenticates uploads.
     - |
+      set -e
       BASE="${CI_API_V4_URL}/projects/${CI_PROJECT_ID}/packages/generic/ai-conv-desktop/${CI_COMMIT_TAG}"
-      BUNDLE_DIR="src-tauri/target/release/bundle"
-      for f in $(find "$BUNDLE_DIR" -type f); do
-        rel="${f#$BUNDLE_DIR/}"
-        curl --fail --silent --show-error --header "JOB-TOKEN: ${CI_JOB_TOKEN}" --upload-file "$f" "$BASE/$rel" > /dev/null || { echo "upload failed: $f" >&2; exit 1; }
+      ASSETS_DIR="$CI_PROJECT_DIR/release-assets"
+      for f in "$ASSETS_DIR"/*; do
+        rel=$(basename "$f")
+        curl --fail --silent --show-error --header "JOB-TOKEN: ${CI_JOB_TOKEN}" --upload-file "$f" "$BASE/$rel" > /dev/null || { echo "upload failed: $rel" >&2; exit 1; }
         echo "uploaded: $rel"
       done
     # latest.json — the updater manifest the permalink endpoint serves.
     - |
+      set -e
       VER="${CI_COMMIT_TAG#v}"
       BASE="${CI_API_V4_URL}/projects/${CI_PROJECT_ID}/packages/generic/ai-conv-desktop/${CI_COMMIT_TAG}"
-      BUNDLE_DIR="src-tauri/target/release/bundle"
-      APPIMG_TGZ=$(find "$BUNDLE_DIR" -name '*.AppImage.tar.gz' | head -1)
-      APPIMG_SIG=$(find "$BUNDLE_DIR" -name '*.AppImage.tar.gz.sig' | head -1)
+      ASSETS_DIR="$CI_PROJECT_DIR/release-assets"
+      APPIMG_TGZ=$(find "$ASSETS_DIR" -maxdepth 1 -name '*.AppImage.tar.gz' | head -1)
+      APPIMG_SIG=$(find "$ASSETS_DIR" -maxdepth 1 -name '*.AppImage.tar.gz.sig' | head -1)
       [ -n "$APPIMG_TGZ" ] && [ -n "$APPIMG_SIG" ] || { echo "updater artifacts missing" >&2; exit 1; }
-      DL="$BASE/appimage/$(basename "$APPIMG_TGZ")"
+      DL="$BASE/$(basename "$APPIMG_TGZ")"
       SIG_B64=$(base64 -w0 "$APPIMG_SIG")
       jq -n --arg ver "$VER" --arg url "$DL" --arg sig "$SIG_B64" '{version:$ver, notes:("AI Conv " + $ver), platforms:{"linux-x86_64":{signature:$sig, url:$url}}}' > latest.json
       curl --fail --silent --show-error --header "JOB-TOKEN: ${CI_JOB_TOKEN}" --upload-file latest.json "$BASE/latest.json" > /dev/null
@@ -351,8 +373,8 @@ release:tauri:
     - |
       VER="${CI_COMMIT_TAG#v}"
       BASE="${CI_API_V4_URL}/projects/${CI_PROJECT_ID}/packages/generic/ai-conv-desktop/${CI_COMMIT_TAG}"
-      BUNDLE_DIR="src-tauri/target/release/bundle"
-      ASSET_FILES=$(find "$BUNDLE_DIR" -type f \( -name '*.AppImage' -o -name '*.deb' -o -name '*.rpm' -o -name 'AI-Conv-*.tar.gz' \))
+      ASSETS_DIR="$CI_PROJECT_DIR/release-assets"
+      ASSET_FILES=$(find "$ASSETS_DIR" -maxdepth 1 -type f \( -name '*.deb' -o -name '*.rpm' -o -name '*.AppImage' -o -name 'AI-Conv-*.tar.gz' \) | sort)
       # NOTE: the assignments must come BEFORE `node`, otherwise they are
       # argv entries and process.env.* is undefined (ASSET_FILES.split threw
       # on every tag pipeline).
@@ -364,7 +386,7 @@ release:tauri:
         const files = process.env.ASSET_FILES.split("\n").filter(Boolean);
         const links = files.map((f) => ({
           name: f.split("/").pop(),
-          url: base + "/" + f.replace("src-tauri/target/release/bundle/", ""),
+          url: base + "/" + f.split("/").pop(),
         }));
         fs.writeFileSync("release.json", JSON.stringify({
           tag_name: tag,
