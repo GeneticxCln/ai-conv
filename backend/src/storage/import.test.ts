@@ -1,5 +1,12 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import { randomUUID } from 'node:crypto';
+
+// This suite inserts real rows, so it must never use the default development
+// database. Set DATABASE_PATH before storage/db.ts is evaluated.
+vi.hoisted(() => {
+  process.env.DATABASE_PATH = `/tmp/ai-conv-import-${process.pid}.db`;
+});
+
 import { createUser, importAllData } from './db.js';
 
 // ── Helpers ────────────────────────────────────────────────────────

@@ -21,6 +21,13 @@ describe('UserMessagePayloadSchema', () => {
     const bad = UserMessagePayloadSchema.safeParse({ content: 'hello' });
     expect(bad.success).toBe(false);
   });
+
+  it('rejects empty and whitespace-only content', () => {
+    const conversationId = '111e4567-e89b-12d3-a456-426614174000';
+    expect(UserMessagePayloadSchema.safeParse({ conversationId, content: '' }).success).toBe(false);
+    expect(UserMessagePayloadSchema.safeParse({ conversationId, content: '   \n ' }).success).toBe(false);
+    expect(UserMessagePayloadSchema.safeParse({ conversationId, content: ' hi ' }).success).toBe(true);
+  });
 });
 
 describe('AgentTokenPayloadSchema', () => {

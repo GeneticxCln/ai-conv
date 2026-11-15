@@ -1,4 +1,5 @@
 import { useCallback } from 'react';
+import { invoke } from '@tauri-apps/api/core';
 import { Conversation, User, Persona, Message } from '@ai-conv/types';
 import { useChatStore } from '../stores/useChatStore';
 import { isTauri } from '../lib/tauriAdapter';
@@ -109,7 +110,6 @@ export function useSocketActions({ emit, emitWithAck, applyAuthToken, connected 
     // fall through to the backend's system:gpu event in that case.
     if (isTauri()) {
       try {
-        const { invoke } = await import('@tauri-apps/api/core');
         const gpu = await invoke<{ available: boolean; name?: string; total_mib?: number; used_mib?: number }>('gpu_info');
         return {
           available: gpu.available,

@@ -14,5 +14,7 @@ export async function getAppVersion(): Promise<string> {
   } catch {
     // Non-Tauri context or IPC unavailable — fall through to the default.
   }
-  return '0.1.0';
+  // Vite injects this from frontend/package.json so the browser fallback
+  // cannot drift behind a release bump.
+  return __APP_VERSION__;
 }

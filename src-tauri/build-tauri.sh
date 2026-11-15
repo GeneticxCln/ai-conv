@@ -6,10 +6,13 @@
 #      frontend copy for single-port serving)
 #   3. Rust release build (sidecar found via src-tauri/binaries + resources)
 #
-# Usage: bash src-tauri/build-tauri.sh [--skip-frontend] [--skip-sidecar] [--cli] [--no-bundle] [--verbose]
+# Usage: bash src-tauri/build-tauri.sh [--skip-frontend] [--skip-sidecar] [--cli] [--no-bundle] [--no-updater] [--verbose]
 #   --cli       Final build via `tauri build` (signs updater artifacts; requires
 #               TAURI_SIGNING_PRIVATE_KEY[_PASSWORD] env) instead of plain cargo.
 #   --no-bundle With --cli: skip OS installers, just build + sign the binary.
+#   --no-updater With --cli: build unsigned OS installers and skip updater
+#               artifacts. Used by the GitHub mirror, which has no signing key;
+#               GitLab remains the signed updater source.
 #   --verbose   With --cli: pass `--verbose` to the Tauri CLI. The AppImage step
 #               reports a bare "failed to run linuxdeploy"; verbose is what
 #               surfaces the child process error.
@@ -20,6 +23,7 @@ SKIP_FRONTEND=false
 SKIP_SIDECAR=false
 USE_TAURI_CLI=false
 NO_BUNDLE=false
+NO_UPDATER=false
 VERBOSE=false
 for arg in "$@"; do
   case "$arg" in
@@ -27,9 +31,15 @@ for arg in "$@"; do
     --skip-sidecar) SKIP_SIDECAR=true ;;
     --cli) USE_TAURI_CLI=true ;;
     --no-bundle) NO_BUNDLE=true ;;
+    --no-updater) NO_UPDATER=true ;;
     --verbose) VERBOSE=true ;;
   esac
 done
+
+if [ "$NO_UPDATER" = true ] && [ "$USE_TAURI_CLI" = false ]; then
+  echo "--no-updater only applies with --cli" >&2
+  exit 2
+fi
 
 if [ "$SKIP_FRONTEND" = false ]; then
   echo "=== [1/3] frontend → dist-tauri ==="
@@ -69,6 +79,11 @@ if [ "$USE_TAURI_CLI" = true ]; then
   # for local dev/test runs only.
   BUNDLE_ARGS=()
   if [ "$NO_BUNDLE" = true ]; then BUNDLE_ARGS+=(--no-bundle); fi
+  if [ "$NO_UPDATER" = true ]; then
+    # The updater key is a GitLab CI secret. GitHub mirror builds remain
+    # unsigned; disabling this keeps Tauri from requiring that key.
+    BUNDLE_ARGS+=(--config '{"bundle":{"createUpdaterArtifacts":false}}')
+  fi
   if [ "$VERBOSE" = true ]; then BUNDLE_ARGS+=(--verbose); fi
   # Pin the CLI major and answer the install prompt: on a CI runner npx has no
   # TTY to confirm with, and unpinned it can fetch a future major.

@@ -64,6 +64,11 @@ function main() {
     stdio: 'inherit',
     env: {
       ...process.env,
+      // Tell pkg's bootstrap to act as plain Node for this child. Without it,
+      // re-running the packaged binary ignores the script argument and
+      // re-enters launcher.cjs (the same mechanism pkg itself uses when it
+      // re-invokes Node for bytecode fabrication).
+      PKG_EXECPATH: 'PKG_INVOKE_NODEJS',
       NODE_PATH: path.join(layout.backendDir, 'node_modules'),
     },
   });

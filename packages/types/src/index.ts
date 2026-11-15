@@ -60,7 +60,11 @@ export const UserMessagePayloadSchema = z.object({
   conversationId: z.string().uuid(),
   // Matches ConversationImportSchema's per-message cap; without it a single
   // socket message can carry an arbitrarily large string into SQLite/Ollama.
-  content: z.string().max(100000),
+  // The first message becomes the conversation title, so blank text would
+  // permanently blank the title — reject empty and whitespace-only messages.
+  content: z.string().min(1).max(100000).refine((value) => value.trim().length > 0, {
+    message: 'Message cannot be empty',
+  }),
   agentChat: z.boolean().optional(),
   tempId: z.string().uuid().optional(),
 });

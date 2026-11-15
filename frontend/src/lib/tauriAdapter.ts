@@ -1,4 +1,5 @@
 import { invoke } from '@tauri-apps/api/core';
+import { io, type Socket } from 'socket.io-client';
 
 /**
  * Tauri desktop adapter — drop-in for the Electron preload bridge.
@@ -16,8 +17,8 @@ import { invoke } from '@tauri-apps/api/core';
 
 type Ack = { ok: boolean; data?: unknown; error?: string };
 
-let socket: import('socket.io-client').Socket | null = null;
-let connecting: Promise<import('socket.io-client').Socket> | null = null;
+let socket: Socket | null = null;
+let connecting: Promise<Socket> | null = null;
 
 // Same-origin default (the Tauri window loads the app from the backend); the
 // env var is a dev/browser override. (Guarded for Node test environments.)
@@ -25,11 +26,10 @@ const WS_URL: string =
   import.meta.env.VITE_WS_URL ||
   (typeof window !== 'undefined' ? window.location.origin : 'http://localhost:3001');
 
-async function getSocket(): Promise<import('socket.io-client').Socket> {
+async function getSocket(): Promise<Socket> {
   if (socket?.connected) return socket;
   if (connecting) return connecting;
   connecting = (async () => {
-    const { io } = await import('socket.io-client');
     const token = (() => {
       try { return localStorage.getItem('aiconv_token'); } catch { return null; }
     })();
