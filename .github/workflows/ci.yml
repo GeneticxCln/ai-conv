@@ -12,6 +12,7 @@ permissions:
 
 env:
   NODE_VERSION: '26'
+  PLAYWRIGHT_VERSION: '1.62.1'
 
 jobs:
   typecheck-and-lint:

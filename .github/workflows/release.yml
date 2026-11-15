@@ -45,6 +45,9 @@ jobs:
             rpm \
             file
 
+      - name: Install FUSE for AppImage tooling
+        run: sudo apt-get install -y libfuse2 || sudo apt-get install -y libfuse2t64 || true
+
       - run: npm ci --legacy-peer-deps
       - run: npm run build --workspace=packages/types
       - run: npm run build --workspace=backend
