@@ -366,6 +366,8 @@ release:tauri:
       SIG_B64=$(base64 -w0 "$APPIMG_SIG")
       jq -n --arg ver "$VER" --arg url "$DL" --arg sig "$SIG_B64" '{version:$ver, notes:("AI Conv " + $ver), platforms:{"linux-x86_64":{signature:$sig, url:$url}}}' > latest.json
       curl --fail --silent --show-error --header "JOB-TOKEN: ${CI_JOB_TOKEN}" --upload-file latest.json "$BASE/latest.json" > /dev/null
+      # Make it visible to the release-link step without re-uploading it.
+      cp latest.json "$ASSETS_DIR/latest.json"
       echo "latest.json uploaded"
     # Create the GitLab Release with asset links via the Releases API
     # (JOB-TOKEN is accepted there).
@@ -373,7 +375,7 @@ release:tauri:
       VER="${CI_COMMIT_TAG#v}"
       BASE="${CI_API_V4_URL}/projects/${CI_PROJECT_ID}/packages/generic/ai-conv-desktop/${CI_COMMIT_TAG}"
       ASSETS_DIR="$CI_PROJECT_DIR/release-assets"
-      ASSET_FILES=$(find "$ASSETS_DIR" -maxdepth 1 -type f \( -name '*.deb' -o -name '*.rpm' -o -name '*.AppImage' -o -name 'AI-Conv-*.tar.gz' \) | sort)
+      ASSET_FILES=$(find "$ASSETS_DIR" -maxdepth 1 -type f \( -name '*.deb' -o -name '*.rpm' -o -name '*.AppImage' -o -name 'AI-Conv-*.tar.gz' -o -name 'latest.json' \) | sort)
       # NOTE: the assignments must come BEFORE `node`, otherwise they are
       # argv entries and process.env.* is undefined (ASSET_FILES.split threw
       # on every tag pipeline).
@@ -383,10 +385,10 @@ release:tauri:
         const tag = process.env.CI_COMMIT_TAG;
         const ver = process.env.VER;
         const files = process.env.ASSET_FILES.split("\n").filter(Boolean);
-        const links = files.map((f) => ({
-          name: f.split("/").pop(),
-          url: base + "/" + f.split("/").pop(),
-        }));
+        const links = files.map((f) => {
+          const name = f.split("/").pop();
+          return { name, url: base + "/" + name, filepath: "/" + name };
+        });
         fs.writeFileSync("release.json", JSON.stringify({
           tag_name: tag,
           name: "AI Conv v" + ver,
